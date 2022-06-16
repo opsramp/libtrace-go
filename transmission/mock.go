@@ -37,14 +37,14 @@ func (m *MockSender) Flush() error {
 	return nil
 }
 
-func (m *MockSender) Events() []*Event {
-	m.EventsCalled += 1
-	m.Lock()
-	defer m.Unlock()
-	output := make([]*Event, len(m.events))
-	copy(output, m.events)
-	return output
-}
+//func (m *MockSender) Events() []*Event {
+//	m.EventsCalled += 1
+//	m.Lock()
+//	defer m.Unlock()
+//	output := make([]*Event, len(m.events))
+//	copy(output, m.events)
+//	return output
+//}
 
 func (m *MockSender) TxResponses() chan Response {
 	return m.responses

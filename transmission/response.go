@@ -19,11 +19,11 @@ type Response struct {
 	// indicating queue overflow
 	Err error
 
-	// StatusCode contains the HTTP Status Code returned by the Honeycomb API
+	// StatusCode contains the HTTP Status Code returned by the Opsramp API
 	// server
 	StatusCode int
 
-	// Body is the body of the HTTP response from the Honeycomb API server.
+	// Body is the body of the HTTP response from the Opsramp API server.
 	Body []byte
 
 	// Duration is a measurement of how long the HTTP request to send an event

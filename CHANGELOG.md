@@ -37,7 +37,7 @@
 
 ### Fixed
 
-- fix race condition on Honeycomb.Flush() (#140) | [@bfreis](https://github.com/bfreis)
+- fix race condition on Opsramp.Flush() (#140) | [@bfreis](https://github.com/bfreis)
 
 ### Maintenance
 

@@ -1,7 +1,6 @@
 package libhoney
 
 import (
-	"errors"
 	"sync"
 
 	"github.com/honeycombio/libhoney-go/transmission"
@@ -29,13 +28,13 @@ type Client struct {
 // a given transmission Sender and should be specified there if the defaults
 // need to be overridden.
 type ClientConfig struct {
-	// APIKey is the Honeycomb authentication token. If it is specified during
+	// APIKey is the opsramp authentication token. If it is specified during
 	// libhoney initialization, it will be used as the default API key for all
 	// events. If absent, API key must be explicitly set on a builder or
-	// event. Find your team's API keys at https://ui.honeycomb.io/account
-	APIKey string
+	// event. Find your team's API keys at https://ui.opsramp.io/account
+	//APIKey string
 
-	// Dataset is the name of the Honeycomb dataset to which to send these events.
+	// Dataset is the name of the opsramp dataset to which to send these events.
 	// If it is specified during libhoney initialization, it will be used as the
 	// default dataset for all events. If absent, dataset must be explicitly set
 	// on a builder or event.
@@ -46,13 +45,13 @@ type ClientConfig struct {
 	// Send() is called, you would specify 250 here.
 	SampleRate uint
 
-	// APIHost is the hostname for the Honeycomb API server to which to send this
-	// event. default: https://api.honeycomb.io/
+	// APIHost is the hostname for the Opsramp API server to which to send this
+	// event. default: https://api.opsramp.io/
 	APIHost string
 
 	// Transmission allows you to override what happens to events after you call
 	// Send() on them. By default, events are asynchronously sent to the
-	// Honeycomb API. You can use the MockOutput included in this package in
+	// Opsramp API. You can use the MockOutput included in this package in
 	// unit tests, or use the transmission.WriterSender to write events to
 	// STDOUT or to a file when developing locally.
 	Transmission transmission.Sender
@@ -82,7 +81,7 @@ func NewClient(conf ClientConfig) (*Client, error) {
 	c.ensureLogger()
 
 	if conf.Transmission == nil {
-		c.transmission = &transmission.Honeycomb{
+		c.transmission = &transmission.Opsramptraceproxy{
 			MaxBatchSize:         DefaultMaxBatchSize,
 			BatchTimeout:         DefaultBatchTimeout,
 			MaxConcurrentBatches: DefaultMaxConcurrentBatches,
@@ -100,7 +99,7 @@ func NewClient(conf ClientConfig) (*Client, error) {
 	}
 
 	c.builder = &Builder{
-		WriteKey:   conf.APIKey,
+		//WriteKey:   conf.APIKey,
 		Dataset:    conf.Dataset,
 		SampleRate: conf.SampleRate,
 		APIHost:    conf.APIHost,
@@ -182,11 +181,11 @@ func (c *Client) TxResponses() chan transmission.Response {
 // for that metric. The function is called once every time a NewEvent() is
 // created and added as a field (with name as the key) to the newly created
 // event.
-func (c *Client) AddDynamicField(name string, fn func() interface{}) error {
-	c.ensureTransmission()
-	c.ensureBuilder()
-	return c.builder.AddDynamicField(name, fn)
-}
+//func (c *Client) AddDynamicField(name string, fn func() interface{}) error {
+//	c.ensureTransmission()
+//	c.ensureBuilder()
+//	return c.builder.AddDynamicField(name, fn)
+//}
 
 // AddField adds a Field to the Client's scope. This metric will be inherited by
 // all builders and events.
@@ -199,11 +198,11 @@ func (c *Client) AddField(name string, val interface{}) {
 // Add adds its data to the Client's scope. It adds all fields in a struct or
 // all keys in a map as individual Fields. These metrics will be inherited by
 // all builders and events.
-func (c *Client) Add(data interface{}) error {
-	c.ensureTransmission()
-	c.ensureBuilder()
-	return c.builder.Add(data)
-}
+//func (c *Client) Add(data interface{}) error {
+//	c.ensureTransmission()
+//	c.ensureBuilder()
+//	return c.builder.Add(data)
+//}
 
 // NewEvent creates a new event prepopulated with any Fields present in the
 // Client's scope.
@@ -222,12 +221,12 @@ func (c *Client) NewBuilder() *Builder {
 }
 
 // sendResponse sends a dropped event response down the response channel
-func (c *Client) sendDroppedResponse(e *Event, message string) {
-	c.ensureTransmission()
-	r := transmission.Response{
-		Err:      errors.New(message),
-		Metadata: e.Metadata,
-	}
-	c.transmission.SendResponse(r)
-
-}
+//func (c *Client) sendDroppedResponse(e *Event, message string) {
+//	c.ensureTransmission()
+//	r := transmission.Response{
+//		Err:      errors.New(message),
+//		Metadata: e.Metadata,
+//	}
+//	c.transmission.SendResponse(r)
+//
+//}

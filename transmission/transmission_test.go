@@ -43,10 +43,10 @@ func (t *timeoutErr) Timeout() bool {
 	return true
 }
 
-func TestEmptyHoneycombTransmission(t *testing.T) {
-	// All fields on the Honeycomb transmission are optional; an empty honeycomb
+func TestEmptyOpsrampTransmission(t *testing.T) {
+	// All fields on the Opsramp transmission are optional; an empty Opsramp
 	// transmission should work (if not very well because of zero length channels)
-	tx := &Honeycomb{}
+	tx := &Opsramp{}
 	tx.Start()
 	tx.Add(&Event{
 		APIKey:  "kiddly",
@@ -56,7 +56,7 @@ func TestEmptyHoneycombTransmission(t *testing.T) {
 }
 
 func TestHnyTxAdd(t *testing.T) {
-	hnyTx := &Honeycomb{
+	hnyTx := &Opsramp{
 		Logger:  &nullLogger{},
 		Metrics: &nullMetrics{},
 		muster:  new(muster.Client),
@@ -136,7 +136,7 @@ func (f *FakeRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
 	}
 	f.reqBody = string(bodyBytes)
 
-	// Honeycomb servers response to msgpack requests with msgpack responses,
+	// Opsramp servers response to msgpack requests with msgpack responses,
 	// but for convenience our tests speak json. Translate as needed.
 	if r.Header.Get("Content-Type") == "application/msgpack" &&
 		f.resp != nil &&
@@ -230,7 +230,7 @@ func TestTxSendSingle(t *testing.T) {
 		testEquals(t, frt.req.URL.String(), expectedURL)
 		versionedUserAgent := fmt.Sprintf("libhoney-go/%s", Version)
 		testEquals(t, frt.req.Header.Get("User-Agent"), versionedUserAgent)
-		testEquals(t, frt.req.Header.Get("X-Honeycomb-Team"), e.APIKey)
+		testEquals(t, frt.req.Header.Get("X-Opsramp-Team"), e.APIKey)
 		buf := &bytes.Buffer{}
 		g := zstd.NewWriter(buf)
 		if doMsgpack {
@@ -494,7 +494,7 @@ func (f *FancyFakeRoundTripper) RoundTrip(r *http.Request) (*http.Response, erro
 		// respHeader is apihost,writekey,dataset
 		headerKeys := strings.Split(reqHeader, ",")
 		expectedURL, _ := url.Parse(fmt.Sprintf("%s/1/batch/%s", headerKeys[0], headerKeys[2]))
-		if r.Header.Get("X-Honeycomb-Team") == headerKeys[1] && r.URL.String() == expectedURL.String() {
+		if r.Header.Get("X-Opsramp-Team") == headerKeys[1] && r.URL.String() == expectedURL.String() {
 			if r.GetBody == nil {
 				panic("Retries must be possible. Set GetBody to fix this.")
 			}
@@ -534,7 +534,7 @@ func (f *FancyFakeRoundTripper) RoundTrip(r *http.Request) (*http.Response, erro
 		// respHeader is apihost,writekey,dataset
 		headerKeys := strings.Split(respHeader, ",")
 		expectedURL, _ := url.Parse(fmt.Sprintf("%s/1/batch/%s", headerKeys[0], headerKeys[2]))
-		if r.Header.Get("X-Honeycomb-Team") == headerKeys[1] && r.URL.String() == expectedURL.String() {
+		if r.Header.Get("X-Opsramp-Team") == headerKeys[1] && r.URL.String() == expectedURL.String() {
 			f.resp.Body = ioutil.NopCloser(strings.NewReader(respBody))
 			responseFound = true
 			break
@@ -916,7 +916,7 @@ func (fb *fakeBatch) Fire(notifier muster.Notifier) {
 	fb.send <- fb.items
 }
 
-func TestHoneycombTransmissionFlush(t *testing.T) {
+func TestOpsrampTransmissionFlush(t *testing.T) {
 	ev := &Event{
 		Metadata: "adder",
 	}
@@ -925,7 +925,7 @@ func TestHoneycombTransmissionFlush(t *testing.T) {
 		// This test adds some data to the default Transmission implementation and
 		// flushes it. Then it checks to verify that the data that was added got
 		// sent.
-		w := new(Honeycomb)
+		w := new(Opsramp)
 		w.MaxBatchSize = 1000
 		w.PendingWorkCapacity = 1
 		block := make(chan struct{})
@@ -973,7 +973,7 @@ func TestHoneycombTransmissionFlush(t *testing.T) {
 	})
 
 	t.Run("Flush should not race or panic if Add is called while Flush is executing", func(t *testing.T) {
-		w := new(Honeycomb)
+		w := new(Opsramp)
 		w.MaxBatchSize = 1000
 		block := make(chan struct{})
 		sendChan := make(chan []interface{}, 2)
@@ -1006,7 +1006,7 @@ func TestHoneycombTransmissionFlush(t *testing.T) {
 	})
 
 	t.Run("Flush should not race or panic if called from multiple goroutines", func(t *testing.T) {
-		w := new(Honeycomb)
+		w := new(Opsramp)
 		w.MaxBatchSize = 1000
 		var wg sync.WaitGroup
 		wg.Add(2)
@@ -1037,12 +1037,12 @@ func TestHoneycombTransmissionFlush(t *testing.T) {
 	})
 }
 
-func TestHoneycombSenderAddingResponsesBlocking(t *testing.T) {
+func TestOpsrampSenderAddingResponsesBlocking(t *testing.T) {
 	// this test has a few timeout checks. don't wait to run other tests.
 	t.Parallel()
 	// using the public SendRespanse method should add the response to the queue
 	// while honoring the block setting
-	w := &Honeycomb{
+	w := &Opsramp{
 		BlockOnResponse:     true,
 		PendingWorkCapacity: 1, // pwc of 1 means response queue size of 2
 		Logger:              &nullLogger{},

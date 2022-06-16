@@ -1,6 +1,6 @@
 package transmission
 
-// txClient handles the transmission of events to Honeycomb.
+// txClient handles the transmission of events to Opsramp.
 //
 // Overview
 //
@@ -20,11 +20,7 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
-	"io"
-	"io/ioutil"
 	"net/http"
-	"net/url"
-	"path"
 	"strings"
 	"sync"
 	"time"
@@ -45,7 +41,7 @@ const (
 // Version is the build version, set by libhoney
 var Version string
 
-type Honeycomb struct {
+type Opsramptraceproxy struct {
 	// how many events to collect into a batch before sending
 	MaxBatchSize uint
 
@@ -92,7 +88,7 @@ type Honeycomb struct {
 	UseTlsInsecure bool
 }
 
-func (h *Honeycomb) Start() error {
+func (h *Opsramptraceproxy) Start() error {
 	if h.Logger == nil {
 		h.Logger = &nullLogger{}
 	}
@@ -127,7 +123,7 @@ func (h *Honeycomb) Start() error {
 	return h.muster.Start()
 }
 
-func (h *Honeycomb) createMuster() *muster.Client {
+func (h *Opsramptraceproxy) createMuster() *muster.Client {
 	m := new(muster.Client)
 	m.MaxBatchSize = h.MaxBatchSize
 	m.BatchTimeout = h.BatchTimeout
@@ -137,14 +133,14 @@ func (h *Honeycomb) createMuster() *muster.Client {
 	return m
 }
 
-func (h *Honeycomb) Stop() error {
-	h.Logger.Printf("Honeycomb transmission stopping")
+func (h *Opsramptraceproxy) Stop() error {
+	h.Logger.Printf("Opsramptraceproxy transmission stopping")
 	err := h.muster.Stop()
 	close(h.responses)
 	return err
 }
 
-func (h *Honeycomb) Flush() (err error) {
+func (h *Opsramptraceproxy) Flush() (err error) {
 	// There isn't a way to flush a muster.Client directly, so we have to stop
 	// the old one (which has a side-effect of flushing the data) and make a new
 	// one. We start the new one and swap it with the old one so that we minimize
@@ -165,7 +161,8 @@ func (h *Honeycomb) Flush() (err error) {
 // it completes. Similarly, if BlockOnSend is set and the pending work is more
 // than the PendingWorkCapacity, this will block a Flush until more pending
 // work can be enqueued.
-func (h *Honeycomb) Add(ev *Event) {
+func (h *Opsramptraceproxy) Add(ev *Event) {
+
 	if h.tryAdd(ev) {
 		h.Metrics.Increment("messages_queued")
 		return
@@ -182,7 +179,7 @@ func (h *Honeycomb) Add(ev *Event) {
 
 // tryAdd attempts to add ev to the underlying muster. It returns false if this
 // was unsucessful because the muster queue (muster.Work) is full.
-func (h *Honeycomb) tryAdd(ev *Event) bool {
+func (h *Opsramptraceproxy) tryAdd(ev *Event) bool {
 	h.musterLock.RLock()
 	defer h.musterLock.RUnlock()
 
@@ -205,11 +202,11 @@ func (h *Honeycomb) tryAdd(ev *Event) bool {
 	}
 }
 
-func (h *Honeycomb) TxResponses() chan Response {
+func (h *Opsramptraceproxy) TxResponses() chan Response {
 	return h.responses
 }
 
-func (h *Honeycomb) SendResponse(r Response) bool {
+func (h *Opsramptraceproxy) SendResponse(r Response) bool {
 	if h.BlockOnResponse {
 		h.responses <- r
 	} else {
@@ -262,7 +259,7 @@ func (b *batchAgg) Add(ev interface{}) {
 	e := ev.(*Event)
 	// collect separate buckets of events to send based on the trio of api/wk/ds
 	// if all three of those match it's safe to send all the events in one batch
-	key := fmt.Sprintf("%s_%s_%s", e.APIHost, e.APIKey, e.Dataset)
+	key := fmt.Sprintf("%s_%s", e.APIHost, e.Dataset)
 	b.batches[key] = append(b.batches[key], e)
 }
 
@@ -279,7 +276,7 @@ func (b *batchAgg) reenqueueEvents(events []*Event) {
 		b.overflowBatches = make(map[string][]*Event)
 	}
 	for _, e := range events {
-		key := fmt.Sprintf("%s_%s_%s", e.APIHost, e.APIKey, e.Dataset)
+		key := fmt.Sprintf("%s_%s", e.APIHost, e.Dataset)
 		b.overflowBatches[key] = append(b.overflowBatches[key], e)
 	}
 }
@@ -330,16 +327,19 @@ func (b *batchAgg) Fire(notifier muster.Notifier) {
 	}
 }
 
-type httpError interface {
-	Timeout() bool
-}
+//type httpError interface {
+//	Timeout() bool
+//}
 
 func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 	fmt.Println("Exporting ProtoMsg batch...")
 	//start := time.Now().UTC()
 	//if b.testNower != nil {
 	//	start = b.testNower.Now()
+
 	//}
+	//b.metrics.Register("counterResponseErrors","counter")
+	//b.metrics.Register("counterResponse20x","counter")
 	if len(events) == 0 {
 		// we managed to create a batch key with no events. odd. move on.
 		return
@@ -357,6 +357,9 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 	if numEncoded == 0 {
 		return
 	}
+	//b.metrics.Register(d.Name+counterEnqueueErrors, "counter")
+	//d.Metrics.Register(d.Name+counterResponse20x, "counter")
+	//d.Metrics.Register(d.Name+counterResponseErrors, "counter")
 
 	// get some attributes common to this entire batch up front off the first
 	// valid event (some may be nil)
@@ -426,6 +429,8 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 
 			if err != nil {
 				fmt.Printf("Could not connect: %v", err)
+				b.metrics.Increment("send_errors")
+
 				return
 			}
 		} else {
@@ -433,6 +438,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 			conn, err = grpc.Dial(apiHostUrl, grpc.WithTransportCredentials(insecure.NewCredentials()))
 			if err != nil {
 				fmt.Printf("Could not connect: %v", err)
+				b.metrics.Increment("send_errors")
 				return
 			}
 		}
@@ -568,16 +574,41 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 
 		defer cancel()
 		r, err := c.ExportTraceProxy(ctx, &req)
-
-		if err != nil {
-			fmt.Printf("could not export traces from proxy in %v try: %v",i, err)
+		if err != nil ||  r.GetStatus() == ""   {
+			fmt.Printf("could not export traces from proxy in %v try: %v", i, err)
+			b.metrics.Increment("send_errors")
+			//b.metrics.Increment( "counterResponseErrors")
 			continue
+		}else{
+			b.metrics.Increment("batches_sent")
+			//b.metrics.Increment("counterResponse20x")
 		}
+
 		fmt.Printf("\ntrace proxy response: %s\n", r.String())
 		fmt.Printf("\ntrace proxy response msg: %s\n", r.GetMessage())
 		fmt.Printf("\ntrace proxy response status: %s\n", r.GetStatus())
 		break
 	}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 	/*
 		url, err := url.Parse(apiHost)
@@ -634,7 +665,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 			}
 
 			req.Header.Set("User-Agent", userAgent)
-			//req.Header.Add("X-Honeycomb-Team", writeKey)
+			//req.Header.Add("X-Opsramp-Team", writeKey)
 			// send off batch!
 			resp, err = b.httpClient.Do(req)
 			if reader, ok := reqBody.(*pooledReader); ok {
@@ -752,8 +783,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 	*/
 
 }
-
-func (b *batchAgg) exportBatch(events []*Event) {
+/*func (b *batchAgg) exportBatch(events []*Event) {
 	fmt.Println("Exporting batch..")
 	start := time.Now().UTC()
 	if b.testNower != nil {
@@ -783,11 +813,11 @@ func (b *batchAgg) exportBatch(events []*Event) {
 
 	// get some attributes common to this entire batch up front off the first
 	// valid event (some may be nil)
-	var apiHost, writeKey, dataset string
+	var apiHost, dataset string
 	for _, ev := range events {
 		if ev != nil {
 			apiHost = ev.APIHost
-			writeKey = ev.APIKey
+			//writeKey = ev.APIKey
 			dataset = ev.Dataset
 			break
 		}
@@ -847,7 +877,7 @@ func (b *batchAgg) exportBatch(events []*Event) {
 		}
 
 		req.Header.Set("User-Agent", userAgent)
-		//req.Header.Add("X-Honeycomb-Team", writeKey)
+		//req.Header.Add("X-Opsramp-Team", writeKey)
 		// send off batch!
 		resp, err = b.httpClient.Do(req)
 		if reader, ok := reqBody.(*pooledReader); ok {
@@ -991,11 +1021,11 @@ func (b *batchAgg) fireBatch(events []*Event) {
 
 	// get some attributes common to this entire batch up front off the first
 	// valid event (some may be nil)
-	var apiHost, writeKey, dataset string
+	var apiHost, dataset string
 	for _, ev := range events {
 		if ev != nil {
 			apiHost = ev.APIHost
-			writeKey = ev.APIKey
+			//writeKey = ev.APIKey
 			dataset = ev.Dataset
 			break
 		}
@@ -1055,7 +1085,7 @@ func (b *batchAgg) fireBatch(events []*Event) {
 		}
 
 		req.Header.Set("User-Agent", userAgent)
-		req.Header.Add("X-Honeycomb-Team", writeKey)
+		//req.Header.Add("X-Opsramp-Team", writeKey)
 		// send off batch!
 		resp, err = b.httpClient.Do(req)
 		if reader, ok := reqBody.(*pooledReader); ok {
@@ -1170,11 +1200,13 @@ func (b *batchAgg) fireBatch(events []*Event) {
 		b.enqueueResponse(resp)
 		eIdx++
 	}
-}
+}*/
 
 // create the JSON for this event list manually so that we can send
 // responses down the response queue for any that fail to marshal
 func (b *batchAgg) encodeBatchJSON(events []*Event) ([]byte, int) {
+
+
 	// track first vs. rest events for commas
 	first := true
 	// track how many we successfully encode for later bookkeeping
@@ -1230,6 +1262,7 @@ func (b *batchAgg) encodeBatchJSON(events []*Event) ([]byte, int) {
 // responses down the response queue for any that fail to marshal
 func (b *batchAgg) encodeBatchProtoBuf(events []*Event) ([]byte, int) {
 	// track first vs. rest events for commas
+
 	first := true
 	// track how many we successfully encode for later bookkeeping
 	var numEncoded int
@@ -1353,14 +1386,14 @@ type pooledReader struct {
 	buf []byte
 }
 
-func (r *pooledReader) Release() error {
-	// Ensure further attempts to read will return io.EOF
-	r.Reset(nil)
-	// Then reset and give up ownership of the buffer.
-	zstdBufferPool.Put(r.buf[:0])
-	r.buf = nil
-	return nil
-}
+//func (r *pooledReader) Release() error {
+//	// Ensure further attempts to read will return io.EOF
+//	r.Reset(nil)
+//	// Then reset and give up ownership of the buffer.
+//	zstdBufferPool.Put(r.buf[:0])
+//	r.buf = nil
+//	return nil
+//}
 
 // Instantiating a new encoder is expensive, so use a global one.
 // EncodeAll() is concurrency-safe.
@@ -1373,7 +1406,7 @@ func init() {
 		// Compression level 2 gives a good balance of speed and compression.
 		zstd.WithEncoderLevel(zstd.EncoderLevelFromZstd(2)),
 		// zstd allocates 2 * GOMAXPROCS * window size, so use a small window.
-		// Most honeycomb messages are smaller than this.
+		// Most Opsramp messages are smaller than this.
 		zstd.WithWindowSize(1<<16),
 	)
 	if err != nil {
@@ -1383,22 +1416,22 @@ func init() {
 
 // buildReqReader returns an io.Reader and a boolean, indicating whether or not
 // the underlying bytes.Reader is compressed.
-func buildReqReader(jsonEncoded []byte, compress bool) (io.Reader, bool) {
-	if compress {
-		var buf []byte
-		if found, ok := zstdBufferPool.Get().([]byte); ok {
-			buf = found[:0]
-		}
-
-		buf = zstdEncoder.EncodeAll(jsonEncoded, buf)
-		reader := pooledReader{
-			buf: buf,
-		}
-		reader.Reset(reader.buf)
-		return &reader, true
-	}
-	return bytes.NewReader(jsonEncoded), false
-}
+//func buildReqReader(jsonEncoded []byte, compress bool) (io.Reader, bool) {
+//	if compress {
+//		var buf []byte
+//		if found, ok := zstdBufferPool.Get().([]byte); ok {
+//			buf = found[:0]
+//		}
+//
+//		buf = zstdEncoder.EncodeAll(jsonEncoded, buf)
+//		reader := pooledReader{
+//			buf: buf,
+//		}
+//		reader.Reset(reader.buf)
+//		return &reader, true
+//	}
+//	return bytes.NewReader(jsonEncoded), false
+//}
 
 // nower to make testing easier
 type nower interface {

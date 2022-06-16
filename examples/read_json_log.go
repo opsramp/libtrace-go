@@ -6,14 +6,14 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
-	"runtime"
+	//"runtime"
 	"sync"
 	"time"
 
 	libhoney "github.com/honeycombio/libhoney-go"
 )
 
-// This example reads JSON blobs from a file and sends them as Honeycomb events.
+// This example reads JSON blobs from a file and sends them as Opsramp events.
 // It will log the success or failure of each sent event to STDOUT.
 // The expectation of the file is that it has one JSON blob per line. Each
 // JSON blob must have a field named timestamp that includes a time objected
@@ -31,25 +31,25 @@ var jsonFilePaths = []string{"./example1.json", "./example2.json"}
 func main() {
 
 	// basic initialization
-	libhConf := libhoney.Config{
-		// TODO change to use APIKey
-		WriteKey: honeyFakeAPIKey,
-		Dataset:  honeyDataset,
-		Logger:   &libhoney.DefaultLogger{},
-	}
-	libhoney.Init(libhConf)
+	//libhConf := libhoney.Config{
+	//	// TODO change to use APIKey
+	////	WriteKey: honeyFakeAPIKey,
+	//	Dataset:  honeyDataset,
+	//	Logger:   &libhoney.DefaultLogger{},
+	//}
+	//libhoney.Init(libhConf)
 
 	wg := sync.WaitGroup{}
 	wg.Add(1)
-	go readResponses(&wg, libhoney.Responses())
+	//go readResponses(&wg, libhoney.Responses())
 
 	// We want every event to include the number of currently running goroutines
 	// and the version number of this app. The goroutines is contrived for this
 	// example, but is useful in larger apps. Adding the version number to the
 	// global scope means every event sent will include this field.
-	libhoney.AddDynamicField("num_goroutines",
-		func() interface{} { return runtime.NumGoroutine() })
-	libhoney.AddField("read_json_log_version", version)
+	//libhoney.AddDynamicField("num_goroutines",
+	//	func() interface{} { return runtime.NumGoroutine() })
+	//libhoney.AddField("read_json_log_version", version)
 
 	// go through each json file and parse it.
 	for _, fileName := range jsonFilePaths {
@@ -79,7 +79,7 @@ func main() {
 
 	libhoney.Close()
 	wg.Wait()
-	fmt.Println("All done! Go check Honeycomb https://ui.honeycomb.io/ to see your data.")
+	fmt.Println("All done! Go check Opsramp https://ui.opsramp.io/ to see your data.")
 }
 
 func readResponses(wg *sync.WaitGroup, responses chan libhoney.Response) {
@@ -87,9 +87,9 @@ func readResponses(wg *sync.WaitGroup, responses chan libhoney.Response) {
 	for r := range responses {
 		if r.StatusCode >= 200 && r.StatusCode < 300 {
 			id := r.Metadata.(string)
-			fmt.Printf("Successfully sent event %s to Honeycomb\n", id)
+			fmt.Printf("Successfully sent event %s to Opsramp\n", id)
 		} else {
-			fmt.Printf("Error sending event to Honeycomb! Code %d, err %v and response body %s\n",
+			fmt.Printf("Error sending event to Opsramp! Code %d, err %v and response body %s\n",
 				r.StatusCode, r.Err, r.Body)
 		}
 	}
@@ -103,7 +103,7 @@ func processLine(line string, builder *libhoney.Builder) {
 	// number of the JSON file we're parsing.
 	ev := builder.NewEvent()
 	ev.Metadata = fmt.Sprintf("id %d", rand.Intn(20))
-	defer ev.Send()
+	//defer ev.Send()
 	defer fmt.Printf("Sending event %s\n", ev.Metadata)
 
 	// unmarshal the JSON blob
@@ -132,7 +132,7 @@ func processLine(line string, builder *libhoney.Builder) {
 	}
 
 	// Add all the fields in the JSON blob to the event
-	ev.Add(data)
+	//ev.Add(data)
 
 	// Sending is handled by the defer.
 }

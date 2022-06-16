@@ -16,7 +16,7 @@ type WriterOutput struct {
 func (w *WriterOutput) Add(ev *Event) {
 	transEv := &transmission.Event{
 		APIHost:    ev.APIHost,
-		APIKey:     ev.WriteKey,
+		//APIKey:     ev.WriteKey,
 		Dataset:    ev.Dataset,
 		SampleRate: ev.SampleRate,
 		Timestamp:  ev.Timestamp,

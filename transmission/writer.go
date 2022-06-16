@@ -21,6 +21,7 @@ type WriterSender struct {
 }
 
 func (w *WriterSender) Start() error {
+
 	if w.ResponseQueueSize == 0 {
 		w.ResponseQueueSize = 100
 	}
