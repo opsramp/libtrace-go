@@ -20,6 +20,9 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	"io/ioutil"
 	"net/http"
 	"strings"
 	"sync"
@@ -40,6 +43,7 @@ const (
 
 // Version is the build version, set by libhoney
 var Version string
+var Opsramptoken, OpsrampKey, OpsrampSecret, ApiEndPoint string
 
 type Opsramptraceproxy struct {
 	// how many events to collect into a batch before sending
@@ -86,7 +90,20 @@ type Opsramptraceproxy struct {
 
 	UseTls         bool
 	UseTlsInsecure bool
+
+	OpsrampKey	string
+	OpsrampSecret string
+	ApiHost 	string
 }
+
+
+type OpsRampAuthTokenResponse struct {
+	AccessToken string `json:"access_token"`
+	TokenType   string `json:"token_type"`
+	ExpiresIn   int64    `json:"expires_in"`
+	Scope       string `json:"scope"`
+}
+
 
 func (h *Opsramptraceproxy) Start() error {
 	if h.Logger == nil {
@@ -114,13 +131,51 @@ func (h *Opsramptraceproxy) Start() error {
 				logger:                h.Logger,
 				useTls:                h.UseTls,
 				useTlsInsecure:        h.UseTlsInsecure,
+				OpsrampKey: 		   h.OpsrampKey,
+				OpsrampSecret:		   h.OpsrampSecret,
+				ApiHost:			   h.ApiHost,
 			}
 		}
 	}
 
+	fmt.Println("OpsrampKey is:  ", h.OpsrampKey)
+	fmt.Println("OpsrampSecret is:  ", h.OpsrampSecret)
+
+	OpsrampKey = h.OpsrampKey
+	OpsrampSecret = h.OpsrampSecret
+	ApiEndPoint =  h.ApiHost
+	Opsramptoken = opsrampOauthToken()
 	m := h.createMuster()
 	h.muster = m
 	return h.muster.Start()
+}
+
+func opsrampOauthToken() string  {
+
+
+	fmt.Println("OpsrampKey:", OpsrampKey)
+	fmt.Println("OpsrampSecret:", OpsrampSecret)
+	url := fmt.Sprintf("%s/auth/oauth/token", strings.TrimRight(ApiEndPoint, "/"))
+	fmt.Println(url)
+	requestBody := strings.NewReader("client_id=" + OpsrampKey + "&client_secret=" + OpsrampSecret + "&grant_type=client_credentials")
+	req, err := http.NewRequest(http.MethodPost, url, requestBody)
+	fmt.Println("request error is: ", err)
+	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Add("Accept", "application/json")
+	req.Header.Set("Connection", "close")
+
+
+	resp, err := http.DefaultClient.Do(req)
+	defer resp.Body.Close()
+	fmt.Println("Response error is: ", err)
+
+	respBody, err := ioutil.ReadAll(resp.Body)
+	fmt.Println("resp.Body is ", string(respBody))
+	var tokenResponse OpsRampAuthTokenResponse
+	err = json.Unmarshal(respBody, &tokenResponse)
+	//fmt.Println("tokenResponse", tokenResponse)
+	fmt.Println("tokenResponse.AccessToken: ", tokenResponse.AccessToken)
+	return tokenResponse.AccessToken
 }
 
 func (h *Opsramptraceproxy) createMuster() *muster.Client {
@@ -245,6 +300,9 @@ type batchAgg struct {
 
 	useTls         bool
 	useTlsInsecure bool
+	OpsrampKey	string
+	OpsrampSecret string
+	ApiHost	string
 }
 
 // batch is a collection of events that will all be POSTed as one HTTP call
@@ -373,6 +431,9 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 			dataset = ev.Dataset
 			tenantId = ev.APITenantId
 			token = ev.APIToken
+			if len(token) == 0 {
+				token = Opsramptoken
+			}
 			break
 		}
 	}
@@ -425,7 +486,11 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 
 			tlsCreds := credentials.NewTLS(tlsCfg)
 			fmt.Println("Connecting with Tls")
-			conn, err = grpc.Dial(apiHostUrl, grpc.WithTransportCredentials(tlsCreds))
+			opts := []grpc.DialOption{
+				grpc.WithTransportCredentials(tlsCreds),
+				grpc.WithUnaryInterceptor(grpcInterceptor),
+			}
+			conn, err = grpc.Dial(apiHostUrl, opts...)
 
 			if err != nil {
 				fmt.Printf("Could not connect: %v", err)
@@ -584,29 +649,12 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 			//b.metrics.Increment("counterResponse20x")
 		}
 
+		fmt.Printf("\ntrace proxy response r.status: %s\n", r.Status)
 		fmt.Printf("\ntrace proxy response: %s\n", r.String())
 		fmt.Printf("\ntrace proxy response msg: %s\n", r.GetMessage())
 		fmt.Printf("\ntrace proxy response status: %s\n", r.GetStatus())
 		break
 	}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
@@ -783,6 +831,29 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 	*/
 
 }
+
+
+var grpcInterceptor = func(ctx context.Context,
+	method string,
+	req interface{},
+	reply interface{},
+	cc *grpc.ClientConn,
+	invoker grpc.UnaryInvoker,
+	opts ...grpc.CallOption,
+) error {
+
+	ctx = metadata.NewOutgoingContext(ctx, metadata.New(map[string]string{"Authorization": Opsramptoken}))
+	err := invoker(ctx, method, req, reply, cc, opts...)
+	if status.Code(err) == codes.Unauthenticated {
+		// renew oauth token here before retry
+		Opsramptoken = opsrampOauthToken()
+	}
+	return err
+}
+
+
+
+
 /*func (b *batchAgg) exportBatch(events []*Event) {
 	fmt.Println("Exporting batch..")
 	start := time.Now().UTC()

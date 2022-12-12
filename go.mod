@@ -10,10 +10,12 @@ require (
 	github.com/facebookgo/muster v0.0.0-20150708232844-fd3d7953fd52
 	github.com/facebookgo/stack v0.0.0-20160209184415-751773369052 // indirect
 	github.com/facebookgo/subset v0.0.0-20200203212716-c811ad88dec4 // indirect
+	github.com/grpc-ecosystem/grpc-gateway/v2 v2.14.0
 	github.com/klauspost/compress v1.13.6
 	github.com/stretchr/testify v1.7.0
 	github.com/vmihailenco/msgpack/v5 v5.3.5
-	google.golang.org/grpc v1.44.0 // indirect
-	google.golang.org/protobuf v1.27.1 // indirect
+	google.golang.org/genproto v0.0.0-20221114212237-e4508ebdbee1
+	google.golang.org/grpc v1.50.1
+	google.golang.org/protobuf v1.28.1
 	gopkg.in/alexcesaro/statsd.v2 v2.0.0
 )
