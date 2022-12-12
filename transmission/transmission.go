@@ -431,7 +431,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 			dataset = ev.Dataset
 			tenantId = ev.APITenantId
 			token = ev.APIToken
-			if len(token) == 0 {
+			if len(ev.APIToken) == 0 {
 				token = Opsramptoken
 			}
 			break
@@ -489,6 +489,9 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 			opts := []grpc.DialOption{
 				grpc.WithTransportCredentials(tlsCreds),
 				grpc.WithUnaryInterceptor(grpcInterceptor),
+			}
+			if token != Opsramptoken {
+				token = Opsramptoken
 			}
 			conn, err = grpc.Dial(apiHostUrl, opts...)
 
