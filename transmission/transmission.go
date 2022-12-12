@@ -17,10 +17,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
-	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"io/ioutil"
 	"net/http"
@@ -455,7 +455,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 		apiHostUrl = apiHost
 	}
 
-	fmt.Printf("\napiHost: %v", apiHost)
+	fmt.Printf("\napiHost: %v\n", apiHost)
 
 	//Root Cert
 	//cServer, _ := ioutil.ReadFile("/etc/ssl/certs/ca-certificates.crt")
@@ -503,7 +503,16 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 			}
 		} else {
 			fmt.Println("Connecting without Tls")
-			conn, err = grpc.Dial(apiHostUrl, grpc.WithTransportCredentials(insecure.NewCredentials()))
+			//conn, err = grpc.Dial(apiHostUrl, grpc.WithTransportCredentials(insecure.NewCredentials()))
+			opts := []grpc.DialOption{
+				grpc.WithTransportCredentials(insecure.NewCredentials()),
+				grpc.WithUnaryInterceptor(grpcInterceptor),
+			}
+			if token != Opsramptoken {
+				token = Opsramptoken
+			}
+			conn, err = grpc.Dial(apiHostUrl, opts...)
+
 			if err != nil {
 				fmt.Printf("Could not connect: %v", err)
 				b.metrics.Increment("send_errors")
