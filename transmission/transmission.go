@@ -853,10 +853,11 @@ var grpcInterceptor = func(ctx context.Context,
 	invoker grpc.UnaryInvoker,
 	opts ...grpc.CallOption,
 ) error {
-	fmt.Println("In auth renewal")
+	fmt.Println("\nIn auth renewal")
 	tokenChecker := fmt.Sprintf("Bearer %s", Opsramptoken)
 	ctx = metadata.NewOutgoingContext(ctx, metadata.New(map[string]string{"Authorization": tokenChecker}))
 	err := invoker(ctx, method, req, reply, cc, opts...)
+	fmt.Println("\nerror for renewing******: ", err)
 	if status.Code(err) == codes.Unauthenticated {
 		// renew oauth token here before retry
 		fmt.Println("Unauthenticated request")
