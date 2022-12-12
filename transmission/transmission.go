@@ -156,18 +156,18 @@ func opsrampOauthToken() string  {
 
 	url := fmt.Sprintf("%s/auth/oauth/token", strings.TrimRight(ApiEndPoint, "/"))
 	requestBody := strings.NewReader("client_id=" + OpsrampKey + "&client_secret=" + OpsrampSecret + "&grant_type=client_credentials")
-	req, err := http.NewRequest(http.MethodPost, url, requestBody)
+	req, _ := http.NewRequest(http.MethodPost, url, requestBody)
 	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Add("Accept", "application/json")
 	req.Header.Set("Connection", "close")
 
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, _ := http.DefaultClient.Do(req)
 	defer resp.Body.Close()
 
-	respBody, err := ioutil.ReadAll(resp.Body)
+	respBody, _ := ioutil.ReadAll(resp.Body)
 	var tokenResponse OpsRampAuthTokenResponse
-	err = json.Unmarshal(respBody, &tokenResponse)
+	_ = json.Unmarshal(respBody, &tokenResponse)
 	return tokenResponse.AccessToken
 }
 
