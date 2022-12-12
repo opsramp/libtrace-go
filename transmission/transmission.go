@@ -44,6 +44,7 @@ const (
 // Version is the build version, set by libhoney
 var Version string
 var Opsramptoken, OpsrampKey, OpsrampSecret, ApiEndPoint string
+var mutex sync.Mutex
 
 type Opsramptraceproxy struct {
 	// how many events to collect into a batch before sending
@@ -138,13 +139,13 @@ func (h *Opsramptraceproxy) Start() error {
 		}
 	}
 
-	fmt.Println("OpsrampKey is:  ", h.OpsrampKey)
-	fmt.Println("OpsrampSecret is:  ", h.OpsrampSecret)
 
 	OpsrampKey = h.OpsrampKey
 	OpsrampSecret = h.OpsrampSecret
 	ApiEndPoint =  h.ApiHost
+	mutex.Lock()
 	Opsramptoken = opsrampOauthToken()
+	mutex.Unlock()
 	m := h.createMuster()
 	h.muster = m
 	return h.muster.Start()
@@ -153,13 +154,9 @@ func (h *Opsramptraceproxy) Start() error {
 func opsrampOauthToken() string  {
 
 
-	fmt.Println("OpsrampKey:", OpsrampKey)
-	fmt.Println("OpsrampSecret:", OpsrampSecret)
 	url := fmt.Sprintf("%s/auth/oauth/token", strings.TrimRight(ApiEndPoint, "/"))
-	fmt.Println(url)
 	requestBody := strings.NewReader("client_id=" + OpsrampKey + "&client_secret=" + OpsrampSecret + "&grant_type=client_credentials")
 	req, err := http.NewRequest(http.MethodPost, url, requestBody)
-	fmt.Println("request error is: ", err)
 	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Add("Accept", "application/json")
 	req.Header.Set("Connection", "close")
@@ -167,14 +164,10 @@ func opsrampOauthToken() string  {
 
 	resp, err := http.DefaultClient.Do(req)
 	defer resp.Body.Close()
-	fmt.Println("Response error is: ", err)
 
 	respBody, err := ioutil.ReadAll(resp.Body)
-	fmt.Println("resp.Body is ", string(respBody))
 	var tokenResponse OpsRampAuthTokenResponse
 	err = json.Unmarshal(respBody, &tokenResponse)
-	//fmt.Println("tokenResponse", tokenResponse)
-	fmt.Println("tokenResponse.AccessToken: ", tokenResponse.AccessToken)
 	return tokenResponse.AccessToken
 }
 
@@ -390,6 +383,7 @@ func (b *batchAgg) Fire(notifier muster.Notifier) {
 //}
 
 func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
+	var agent bool
 	fmt.Println("Exporting ProtoMsg batch...")
 	//start := time.Now().UTC()
 	//if b.testNower != nil {
@@ -430,9 +424,12 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 			//writeKey = ev.APIKey
 			dataset = ev.Dataset
 			tenantId = ev.APITenantId
-			token = ev.APIToken
 			if len(ev.APIToken) == 0 {
 				token = Opsramptoken
+				agent = false
+			} else {
+				token = ev.APIToken
+				agent = true
 			}
 			break
 		}
@@ -476,6 +473,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 			b.metrics.Increment("send_retries")
 		}
 		var conn *grpc.ClientConn
+		var opts []grpc.DialOption
 		var err error
 		if b.useTls {
 			bInsecureSkip := b.useTlsInsecure
@@ -486,38 +484,32 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 
 			tlsCreds := credentials.NewTLS(tlsCfg)
 			fmt.Println("Connecting with Tls")
-			opts := []grpc.DialOption{
+			opts = []grpc.DialOption{
 				grpc.WithTransportCredentials(tlsCreds),
 				grpc.WithUnaryInterceptor(grpcInterceptor),
 			}
-			if token != Opsramptoken {
-				token = Opsramptoken
-			}
-			conn, err = grpc.Dial(apiHostUrl, opts...)
 
-			if err != nil {
-				fmt.Printf("Could not connect: %v", err)
-				b.metrics.Increment("send_errors")
 
-				return
-			}
 		} else {
 			fmt.Println("Connecting without Tls")
 			//conn, err = grpc.Dial(apiHostUrl, grpc.WithTransportCredentials(insecure.NewCredentials()))
-			opts := []grpc.DialOption{
+			opts = []grpc.DialOption{
 				grpc.WithTransportCredentials(insecure.NewCredentials()),
 				grpc.WithUnaryInterceptor(grpcInterceptor),
 			}
-			if token != Opsramptoken {
-				token = Opsramptoken
-			}
-			conn, err = grpc.Dial(apiHostUrl, opts...)
+		}
+		if token != Opsramptoken && !agent {
+			mutex.Lock()
+			token = Opsramptoken
+			mutex.Unlock()
+		}
+		conn, err = grpc.Dial(apiHostUrl, opts...)
 
-			if err != nil {
-				fmt.Printf("Could not connect: %v", err)
-				b.metrics.Increment("send_errors")
-				return
-			}
+		if err != nil {
+			fmt.Printf("Could not connect: %v", err)
+			b.metrics.Increment("send_errors")
+
+			return
 		}
 
 		//auth, _ := oauth.NewApplicationDefault(context.Background(), "")
@@ -661,7 +653,6 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 			//b.metrics.Increment("counterResponse20x")
 		}
 
-		fmt.Printf("\ntrace proxy response r.status: %s\n", r.Status)
 		fmt.Printf("\ntrace proxy response: %s\n", r.String())
 		fmt.Printf("\ntrace proxy response msg: %s\n", r.GetMessage())
 		fmt.Printf("\ntrace proxy response status: %s\n", r.GetStatus())
@@ -853,15 +844,14 @@ var grpcInterceptor = func(ctx context.Context,
 	invoker grpc.UnaryInvoker,
 	opts ...grpc.CallOption,
 ) error {
-	fmt.Println("\nIn auth renewal")
 	tokenChecker := fmt.Sprintf("Bearer %s", Opsramptoken)
 	ctx = metadata.NewOutgoingContext(ctx, metadata.New(map[string]string{"Authorization": tokenChecker}))
 	err := invoker(ctx, method, req, reply, cc, opts...)
-	fmt.Println("\nerror for renewing******: ", err, "\n status.Code(err): &&&&&&   : ", status.Code(err), "\n codes.Unauthenticated(((: ", codes.Unauthenticated)
 	if status.Code(err) == codes.Unknown {
 		// renew oauth token here before retry
-		fmt.Println("Unauthenticated request")
+		mutex.Lock()
 		Opsramptoken = opsrampOauthToken()
+		mutex.Unlock()
 	}
 	return err
 }
