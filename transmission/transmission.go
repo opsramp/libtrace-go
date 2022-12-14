@@ -639,6 +639,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 
 		//Add headers
 		//md := metadata.New(map[string]string{"authorization": token, "tenantId": tenantId})
+		fmt.Println("Transmitting token is $$$$$$$$$$  :",token)
 		ctx = metadata.AppendToOutgoingContext(ctx, "Authorization", token, "tenantId", tenantId, "dataset", dataset)
 
 		defer cancel()
