@@ -847,6 +847,7 @@ var grpcInterceptor = func(ctx context.Context,
 	tokenChecker := fmt.Sprintf("Bearer %s", Opsramptoken)
 	ctx = metadata.NewOutgoingContext(ctx, metadata.New(map[string]string{"Authorization": tokenChecker}))
 	err := invoker(ctx, method, req, reply, cc, opts...)
+	fmt.Println("\nerror for renewing******: ", err, "\n status.Code(err): &&&&&&   : ", status.Code(err), "\n codes.Unauthenticated(((: ", codes.Unauthenticated)
 	if status.Code(err) == codes.Unauthenticated {
 		// renew oauth token here before retry
 		mutex.Lock()
