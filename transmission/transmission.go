@@ -436,7 +436,6 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 	}
 
 	fmt.Printf("\ntenantId: %v", tenantId)
-	fmt.Printf("\ntoken: %v", token)
 
 	if tenantId == "" {
 		fmt.Println("Skipping as TenantId is empty")
@@ -639,7 +638,6 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 
 		//Add headers
 		//md := metadata.New(map[string]string{"authorization": token, "tenantId": tenantId})
-		fmt.Println("Transmitting token is $$$$$$$$$$  :",token)
 		ctx = metadata.AppendToOutgoingContext(ctx, "Authorization", token, "tenantId", tenantId, "dataset", dataset)
 
 		defer cancel()
@@ -848,7 +846,6 @@ var grpcInterceptor = func(ctx context.Context,
 	tokenChecker := fmt.Sprintf("Bearer %s", Opsramptoken)
 	ctx = metadata.NewOutgoingContext(ctx, metadata.New(map[string]string{"Authorization": tokenChecker}))
 	err := invoker(ctx, method, req, reply, cc, opts...)
-	fmt.Println("\nerror for renewing******: ", err, "\n status.Code(err): &&&&&&   : ", status.Code(err), "\n codes.Unauthenticated(((: ", codes.Unauthenticated)
 	if status.Code(err) == codes.Unauthenticated {
 		// renew oauth token here before retry
 		mutex.Lock()
