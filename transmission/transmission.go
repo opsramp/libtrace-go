@@ -33,6 +33,7 @@ import (
 	"github.com/klauspost/compress/zstd"
 	"github.com/vmihailenco/msgpack/v5"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/connectivity"
 )
 
 const (
@@ -135,6 +136,8 @@ func (h *Opsramptraceproxy) Start() error {
 				OpsrampKey: 		   h.OpsrampKey,
 				OpsrampSecret:		   h.OpsrampSecret,
 				ApiHost:			   h.ApiHost,
+				conn:				   nil,
+				opts: 				   nil,
 			}
 		}
 	}
@@ -296,6 +299,8 @@ type batchAgg struct {
 	OpsrampKey	string
 	OpsrampSecret string
 	ApiHost	string
+	conn *grpc.ClientConn
+	opts []grpc.DialOption
 }
 
 // batch is a collection of events that will all be POSTed as one HTTP call
@@ -382,8 +387,6 @@ func (b *batchAgg) Fire(notifier muster.Notifier) {
 //	Timeout() bool
 //}
 
-var conn *grpc.ClientConn
-var opts []grpc.DialOption
 
 func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 	var agent bool
@@ -484,7 +487,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 
 			tlsCreds := credentials.NewTLS(tlsCfg)
 			fmt.Println("Connecting with Tls")
-			opts = []grpc.DialOption{
+			b.opts = []grpc.DialOption{
 				grpc.WithTransportCredentials(tlsCreds),
 				grpc.WithUnaryInterceptor(grpcInterceptor),
 			}
@@ -493,7 +496,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 		} else {
 			fmt.Println("Connecting without Tls")
 			//conn, err = grpc.Dial(apiHostUrl, grpc.WithTransportCredentials(insecure.NewCredentials()))
-			opts = []grpc.DialOption{
+			b.opts = []grpc.DialOption{
 				grpc.WithTransportCredentials(insecure.NewCredentials()),
 				grpc.WithUnaryInterceptor(grpcInterceptor),
 			}
@@ -503,20 +506,24 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 			token = Opsramptoken
 			mutex.Unlock()
 		}
-		conn, err = grpc.Dial(apiHostUrl, opts...)
 
-		if err != nil {
-			fmt.Printf("Could not connect: %v", err)
-			b.metrics.Increment("send_errors")
 
-			return
+		if b.conn == nil || b.conn.GetState() == connectivity.TransientFailure || b.conn.GetState() == connectivity.Shutdown  || string(b.conn.GetState()) == "INVALID_STATE" {
+			b.conn, err = grpc.Dial(apiHostUrl, b.opts...)
+			if err != nil {
+				fmt.Printf("Could not connect: %v", err)
+				b.metrics.Increment("send_errors")
+
+				return
+			}
 		}
+
+
 
 		//auth, _ := oauth.NewApplicationDefault(context.Background(), "")
 		//conn, err := grpc.Dial(apiHost, grpc.WithPerRPCCredentials(auth))
 
-		defer conn.Close()
-		c := proxypb.NewTraceProxyServiceClient(conn)
+		c := proxypb.NewTraceProxyServiceClient(b.conn)
 
 		req := proxypb.ExportTraceProxyServiceRequest{}
 
