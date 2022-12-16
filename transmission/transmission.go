@@ -382,6 +382,9 @@ func (b *batchAgg) Fire(notifier muster.Notifier) {
 //	Timeout() bool
 //}
 
+var conn *grpc.ClientConn
+var opts []grpc.DialOption
+
 func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 	var agent bool
 	fmt.Println("Exporting ProtoMsg batch...")
@@ -471,8 +474,6 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 		if i > 0 {
 			b.metrics.Increment("send_retries")
 		}
-		var conn *grpc.ClientConn
-		var opts []grpc.DialOption
 		var err error
 		if b.useTls {
 			bInsecureSkip := b.useTlsInsecure
