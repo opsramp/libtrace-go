@@ -186,6 +186,9 @@ func (h *Opsramptraceproxy) createMuster() *muster.Client {
 func (h *Opsramptraceproxy) Stop() error {
 	h.Logger.Printf("Opsramptraceproxy transmission stopping")
 	err := h.muster.Stop()
+	if conn != nil {
+		conn.Close()
+	}
 	close(h.responses)
 	return err
 }
@@ -505,9 +508,9 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 			mutex.Unlock()
 		}
 
-		fmt.Println("conn is %%%%: ",conn)
+		//fmt.Println("conn is %%%%: ",conn)
 		if conn == nil || conn.GetState() == connectivity.TransientFailure || conn.GetState() == connectivity.Shutdown  || string(conn.GetState()) == "INVALID_STATE" {
-			fmt.Println("inside conn if conn is %%%%: ",conn)
+			//fmt.Println("inside conn if conn is %%%%: ",conn)
 			mutex.Lock()
 			conn, err = grpc.Dial(apiHostUrl, opts...)
 			mutex.Unlock()
@@ -524,7 +527,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 		//auth, _ := oauth.NewApplicationDefault(context.Background(), "")
 		//conn, err := grpc.Dial(apiHost, grpc.WithPerRPCCredentials(auth))
 
-		fmt.Println("after conn if conn is %%%%: ",conn)
+		//fmt.Println("after conn if conn is %%%%: ",conn)
 
 
 		c := proxypb.NewTraceProxyServiceClient(conn)
@@ -863,6 +866,7 @@ var grpcInterceptor = func(ctx context.Context,
 		mutex.Lock()
 		Opsramptoken = opsrampOauthToken()
 		mutex.Unlock()
+		fmt.Println("Auth token is renewed")
 	}
 	return err
 }
