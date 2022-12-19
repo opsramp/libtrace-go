@@ -46,7 +46,8 @@ const (
 var Version string
 var Opsramptoken, OpsrampKey, OpsrampSecret, ApiEndPoint string
 var mutex sync.Mutex
-
+var conn *grpc.ClientConn
+var opts []grpc.DialOption
 type Opsramptraceproxy struct {
 	// how many events to collect into a batch before sending
 	MaxBatchSize uint
@@ -136,8 +137,6 @@ func (h *Opsramptraceproxy) Start() error {
 				OpsrampKey: 		   h.OpsrampKey,
 				OpsrampSecret:		   h.OpsrampSecret,
 				ApiHost:			   h.ApiHost,
-				conn:				   nil,
-				opts: 				   nil,
 			}
 		}
 	}
@@ -299,8 +298,7 @@ type batchAgg struct {
 	OpsrampKey	string
 	OpsrampSecret string
 	ApiHost	string
-	conn *grpc.ClientConn
-	opts []grpc.DialOption
+
 }
 
 // batch is a collection of events that will all be POSTed as one HTTP call
@@ -487,7 +485,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 
 			tlsCreds := credentials.NewTLS(tlsCfg)
 			fmt.Println("Connecting with Tls")
-			b.opts = []grpc.DialOption{
+			opts = []grpc.DialOption{
 				grpc.WithTransportCredentials(tlsCreds),
 				grpc.WithUnaryInterceptor(grpcInterceptor),
 			}
@@ -496,7 +494,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 		} else {
 			fmt.Println("Connecting without Tls")
 			//conn, err = grpc.Dial(apiHostUrl, grpc.WithTransportCredentials(insecure.NewCredentials()))
-			b.opts = []grpc.DialOption{
+			opts = []grpc.DialOption{
 				grpc.WithTransportCredentials(insecure.NewCredentials()),
 				grpc.WithUnaryInterceptor(grpcInterceptor),
 			}
@@ -508,8 +506,10 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 		}
 
 
-		if b.conn == nil || b.conn.GetState() == connectivity.TransientFailure || b.conn.GetState() == connectivity.Shutdown  || string(b.conn.GetState()) == "INVALID_STATE" {
-			b.conn, err = grpc.Dial(apiHostUrl, b.opts...)
+		if conn == nil || conn.GetState() == connectivity.TransientFailure || conn.GetState() == connectivity.Shutdown  || string(conn.GetState()) == "INVALID_STATE" {
+			mutex.Lock()
+			conn, err = grpc.Dial(apiHostUrl, opts...)
+			mutex.Unlock()
 			if err != nil {
 				fmt.Printf("Could not connect: %v", err)
 				b.metrics.Increment("send_errors")
@@ -523,7 +523,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 		//auth, _ := oauth.NewApplicationDefault(context.Background(), "")
 		//conn, err := grpc.Dial(apiHost, grpc.WithPerRPCCredentials(auth))
 
-		c := proxypb.NewTraceProxyServiceClient(b.conn)
+		c := proxypb.NewTraceProxyServiceClient(conn)
 
 		req := proxypb.ExportTraceProxyServiceRequest{}
 
