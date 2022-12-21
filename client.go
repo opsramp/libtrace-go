@@ -1,9 +1,9 @@
-package libhoney
+package libtrace
 
 import (
 	"sync"
 
-	"github.com/honeycombio/libhoney-go/transmission"
+	"github.com/opsramp/libtrace-go/transmission"
 )
 
 // Client represents an object that can create new builders and events and send

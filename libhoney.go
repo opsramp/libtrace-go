@@ -2,7 +2,7 @@
 // Use of this source code is governed by the Apache License 2.0
 // license that can be found in the LICENSE file.
 
-package libhoney
+package libtrace
 
 import (
 	"bytes"
@@ -16,8 +16,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/honeycombio/libhoney-go/transmission"
-	statsd "gopkg.in/alexcesaro/statsd.v2"
+	"github.com/opsramp/libtrace-go/transmission"
+	"gopkg.in/alexcesaro/statsd.v2"
 )
 
 func init() {
@@ -243,8 +243,8 @@ type transitionOutput struct {
 
 func (to *transitionOutput) Add(ev *transmission.Event) {
 	origEvent := &Event{
-		APIHost:     ev.APIHost,
-	//	WriteKey:    ev.APIKey,
+		APIHost: ev.APIHost,
+		//	WriteKey:    ev.APIKey,
 		Dataset:     ev.Dataset,
 		SampleRate:  ev.SampleRate,
 		Timestamp:   ev.Timestamp,
@@ -501,25 +501,26 @@ func Flush() {
 // to sent events.
 //
 // Deprecated: Responses is deprecated; please use TxResponses instead.
-//func Responses() chan Response {
-//	oneResp.Do(func() {
-//		if transitionResponses == nil {
-//			txResponses := dc.TxResponses()
-//			transitionResponses = make(chan Response, cap(txResponses))
-//			go func() {
-//				for txResp := range txResponses {
-//					resp := Response{}
-//					resp.Response = txResp
-//					transitionResponses <- resp
-//				}
-//				close(transitionResponses)
-//			}()
-//		}
-//	})
-//	return transitionResponses
-//}
 //
-//// TxResponses returns the channel from which the caller can read the responses
+//	func Responses() chan Response {
+//		oneResp.Do(func() {
+//			if transitionResponses == nil {
+//				txResponses := dc.TxResponses()
+//				transitionResponses = make(chan Response, cap(txResponses))
+//				go func() {
+//					for txResp := range txResponses {
+//						resp := Response{}
+//						resp.Response = txResp
+//						transitionResponses <- resp
+//					}
+//					close(transitionResponses)
+//				}()
+//			}
+//		})
+//		return transitionResponses
+//	}
+//
+// // TxResponses returns the channel from which the caller can read the responses
 // to sent events.
 func TxResponses() chan transmission.Response {
 	return dc.TxResponses()
@@ -818,7 +819,7 @@ func (e *Event) SendPresampled() (err error) {
 
 	e.client.ensureTransmission()
 	txEvent := &transmission.Event{
-		APIHost:     e.APIHost,
+		APIHost: e.APIHost,
 		//APIKey:      e.WriteKey,
 		APIToken:    e.APIToken,
 		APITenantId: e.APITenantId,

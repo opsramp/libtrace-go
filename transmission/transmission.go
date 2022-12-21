@@ -29,7 +29,7 @@ import (
 	"time"
 
 	"github.com/facebookgo/muster"
-	proxypb "github.com/honeycombio/libhoney-go/proto/proxypb"
+	proxypb "github.com/opsramp/libtrace-go/proto/proxypb"
 	"github.com/klauspost/compress/zstd"
 	"github.com/vmihailenco/msgpack/v5"
 	"google.golang.org/grpc"

@@ -1,4 +1,4 @@
-package libhoney
+package libtrace
 
 import (
 	"bytes"
@@ -15,10 +15,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/honeycombio/libhoney-go/transmission"
+	"github.com/opsramp/libtrace-go/transmission"
 	"github.com/stretchr/testify/assert"
 
-	statsd "gopkg.in/alexcesaro/statsd.v2"
+	"gopkg.in/alexcesaro/statsd.v2"
 )
 
 // because package level vars get initialized on package inclusion, subsequent
@@ -193,7 +193,7 @@ func TestAddStructPtr(t *testing.T) {
 	resetPackageVars()
 	//intPtr := new(int)
 	//conf := Config{}
-//	Init(conf)
+	//	Init(conf)
 	ev := NewEvent()
 	//r := Aich{
 	//	F1: "snth",
@@ -244,7 +244,7 @@ func TestAddDeepStruct(t *testing.T) {
 		F4: []string{"eoeoe", "ththt"},
 	}
 	//err := ev.Add(j)
-//	testOK(t, err)
+	//	testOK(t, err)
 	testEquals(t, ev.data["F1"], j.F1)
 	testEquals(t, ev.data["F2"], r)
 	testEquals(t, ev.data["F3"], struct{ A []int }{[]int{2, 3}})
@@ -338,9 +338,9 @@ func TestAddMapPtr(t *testing.T) {
 		"e": r,
 	}
 	ev := NewEvent()
-//	err := ev.Add(&mStr)
+	//	err := ev.Add(&mStr)
 	t.Logf("ev.data is %+v", ev.data)
-//	testOK(t, err)
+	//	testOK(t, err)
 	testEquals(t, ev.data["a"], mStr["a"].(string))
 	testEquals(t, ev.data["b"], int(mStr["b"].(int)))
 	testEquals(t, ev.data["c"], float64(mStr["c"].(float64)))
@@ -375,7 +375,7 @@ func TestAddFunc(t *testing.T) {
 	//}
 
 	ev := NewEvent()
-//	ev.AddFunc(myFn)
+	//	ev.AddFunc(myFn)
 	t.Logf("data has %+v", ev.data)
 	testEquals(t, ev.data["aoeu"], vals[0].(string))
 	testEquals(t, ev.data["oeui"], int(vals[1].(int)))
@@ -479,7 +479,7 @@ func TestBuilderDynFields(t *testing.T) {
 	//	f += 1.2
 	//	return v
 	//}
-//	AddDynamicField("ints", myIntFn)
+	//	AddDynamicField("ints", myIntFn)
 	b := NewBuilder()
 	//b.AddDynamicField("strs", myStrFn)
 	testEquals(t, len(dc.builder.dynFields), 1)
@@ -492,7 +492,7 @@ func TestBuilderDynFields(t *testing.T) {
 	testEquals(t, ev2.data["strs"], "aoeu")
 
 	b2 := b.Clone()
-//	b2.AddDynamicField("floats", myFloatFn)
+	//	b2.AddDynamicField("floats", myFloatFn)
 	ev3 := NewEvent()
 	testEquals(t, ev3.data["ints"], 2)
 	testEquals(t, ev3.data["strs"], nil)
@@ -579,7 +579,7 @@ func TestOutputInterface(t *testing.T) {
 
 func TestSendTime(t *testing.T) {
 	resetPackageVars()
-//	testTx := &transmission.MockSender{}
+	//	testTx := &transmission.MockSender{}
 	//Init(Config{
 	//	WriteKey:     "foo",
 	//	Dataset:      "bar",
@@ -651,9 +651,9 @@ func TestSendPresampledErrors(t *testing.T) {
 				fieldHolder: fieldHolder{
 					data: map[string]interface{}{"a": 1},
 				},
-				APIHost:  "foo",
+				APIHost: "foo",
 				//WriteKey: "bar",
-				client:   dc,
+				client: dc,
 			},
 			expErr: errors.New("No Dataset for Opsramp. Can't send datasetless."),
 		},
@@ -662,10 +662,10 @@ func TestSendPresampledErrors(t *testing.T) {
 				fieldHolder: fieldHolder{
 					data: map[string]interface{}{"a": 1},
 				},
-				APIHost:  "foo",
+				APIHost: "foo",
 				//WriteKey: "bar",
-				Dataset:  "baz",
-				client:   dc,
+				Dataset: "baz",
+				client:  dc,
 			},
 			expErr: nil,
 		},
@@ -690,7 +690,7 @@ func TestPresampledSendSamplerate(t *testing.T) {
 		fieldHolder: fieldHolder{
 			data: map[string]interface{}{"a": 1},
 		},
-		APIHost:    "foo",
+		APIHost: "foo",
 		//WriteKey:   "bar",
 		Dataset:    "baz",
 		SampleRate: 5,
@@ -893,7 +893,7 @@ func TestDataRace3(t *testing.T) {
 		fieldHolder: fieldHolder{
 			data: map[string]interface{}{"a": 1},
 		},
-		APIHost:    "foo",
+		APIHost: "foo",
 		//WriteKey:   "bar",
 		Dataset:    "baz",
 		SampleRate: 1,
@@ -1044,7 +1044,7 @@ func BenchmarkEndToEnd(b *testing.B) {
 		ev := hc.NewEvent()
 		ev.AddField("event", n)
 		ev.AddField("method", "get")
-	//	ev.Send()
+		//	ev.Send()
 	}
 }
 
@@ -1092,8 +1092,8 @@ func TestEventStringReturnsMaskedApiKey(t *testing.T) {
 				fieldHolder: fieldHolder{
 					data: map[string]interface{}{"a": 1},
 				},
-				APIHost:    "foo",
-	//			WriteKey:   "",
+				APIHost: "foo",
+				//			WriteKey:   "",
 				Dataset:    "baz",
 				SampleRate: 1,
 				client:     dc,
@@ -1105,8 +1105,8 @@ func TestEventStringReturnsMaskedApiKey(t *testing.T) {
 				fieldHolder: fieldHolder{
 					data: map[string]interface{}{"a": 1},
 				},
-				APIHost:    "foo",
-			//	WriteKey:   "woop",
+				APIHost: "foo",
+				//	WriteKey:   "woop",
 				Dataset:    "baz",
 				SampleRate: 1,
 				client:     dc,
@@ -1118,7 +1118,7 @@ func TestEventStringReturnsMaskedApiKey(t *testing.T) {
 				fieldHolder: fieldHolder{
 					data: map[string]interface{}{"a": 1},
 				},
-				APIHost:    "foo",
+				APIHost: "foo",
 				//WriteKey:   "fibble",
 				Dataset:    "baz",
 				SampleRate: 1,
@@ -1131,7 +1131,7 @@ func TestEventStringReturnsMaskedApiKey(t *testing.T) {
 				fieldHolder: fieldHolder{
 					data: map[string]interface{}{"a": 1},
 				},
-				APIHost:    "foo",
+				APIHost: "foo",
 				//WriteKey:   "fibblewibble",
 				Dataset:    "baz",
 				SampleRate: 1,

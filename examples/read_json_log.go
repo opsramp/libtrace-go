@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	libhoney "github.com/honeycombio/libhoney-go"
+	libhoney "github.com/opsramp/libtrace-go"
 )
 
 // This example reads JSON blobs from a file and sends them as Opsramp events.

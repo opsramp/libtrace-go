@@ -1,7 +1,7 @@
-package libhoney
+package libtrace
 
 import (
-	"github.com/honeycombio/libhoney-go/transmission"
+	"github.com/opsramp/libtrace-go/transmission"
 )
 
 // WriterOutput implements the Output interface and passes it along to the
@@ -15,7 +15,7 @@ type WriterOutput struct {
 
 func (w *WriterOutput) Add(ev *Event) {
 	transEv := &transmission.Event{
-		APIHost:    ev.APIHost,
+		APIHost: ev.APIHost,
 		//APIKey:     ev.WriteKey,
 		Dataset:    ev.Dataset,
 		SampleRate: ev.SampleRate,

@@ -1,6 +1,6 @@
-package libhoney
+package libtrace
 
-import "github.com/honeycombio/libhoney-go/transmission"
+import "github.com/opsramp/libtrace-go/transmission"
 
 // MockOutput implements the Output interface and passes it along to the
 // transmission.MockSender.
@@ -13,7 +13,7 @@ type MockOutput struct {
 
 func (w *MockOutput) Add(ev *Event) {
 	transEv := &transmission.Event{
-		APIHost:    ev.APIHost,
+		APIHost: ev.APIHost,
 		//APIKey:     ev.WriteKey,
 		Dataset:    ev.Dataset,
 		SampleRate: ev.SampleRate,

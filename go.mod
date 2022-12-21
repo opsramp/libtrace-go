@@ -1,4 +1,4 @@
-module github.com/honeycombio/libhoney-go
+module github.com/opsramp/libtrace-go
 
 go 1.14
 

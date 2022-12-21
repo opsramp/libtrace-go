@@ -1,4 +1,4 @@
-package libhoney
+package libtrace
 
 import (
 	"fmt"
@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/honeycombio/libhoney-go/transmission"
+	"github.com/opsramp/libtrace-go/transmission"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -79,7 +79,7 @@ func TestClientRaces(t *testing.T) {
 			c.AddField("name", "val")
 			ev := c.NewEvent()
 			ev.AddField("argel", "bargle")
-		//	ev.Send()
+			//	ev.Send()
 			c.Close()
 			wg.Done()
 		}()
