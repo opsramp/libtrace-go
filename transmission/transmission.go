@@ -24,36 +24,78 @@ import (
 	"google.golang.org/grpc/status"
 	"io/ioutil"
 	"net/http"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/facebookgo/muster"
-	proxypb "github.com/opsramp/libtrace-go/proto/proxypb"
 	"github.com/klauspost/compress/zstd"
+	proxypb "github.com/opsramp/libtrace-go/proto/proxypb"
+	"github.com/opsramp/libtrace-go/version"
 	"github.com/vmihailenco/msgpack/v5"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/connectivity"
 )
 
 const (
-	apiMaxBatchSize    int = 5000000 // 5MB
-	apiEventSizeMax    int = 100000  // 100KB
+	// Size limit for a serialized request body sent for a batch.
+	apiMaxBatchSize int = 5000000 // 5MB
+	// Size limit for a single serialized event within a batch.
+	apiEventSizeMax    int = 100000 // 100KB
 	maxOverflowBatches int = 10
+	// Default start-to-finish timeout for batch send HTTP requests.
+	defaultSendTimeout = time.Second * 60
 )
 
-// Version is the build version, set by libhoney
-var Version string
+var (
+	// Libhoney's portion of the User-Agent header, e.g. "libhoney/1.2.3"
+	baseUserAgent = fmt.Sprintf("libtrace-go/%s", version.Version)
+	// Information about the runtime environment for inclusion in User-Agent
+	runtimeInfo = fmt.Sprintf("%s (%s/%s)", strings.Replace(runtime.Version(), "go", "go/", 1), runtime.GOOS, runtime.GOARCH)
+	// The default User-Agent when no additions have been given
+	defaultUserAgent = fmt.Sprintf("%s %s", baseUserAgent, runtimeInfo)
+)
+
+// Return a user-agent value including any additions made in the configuration
+func fmtUserAgent(addition string) string {
+	if addition != "" {
+		return fmt.Sprintf("%s %s %s", baseUserAgent, strings.TrimSpace(addition), runtimeInfo)
+	} else {
+		return defaultUserAgent
+	}
+}
+
 var Opsramptoken, OpsrampKey, OpsrampSecret, ApiEndPoint string
 var mutex sync.Mutex
 var conn *grpc.ClientConn
 var opts []grpc.DialOption
+
 type Opsramptraceproxy struct {
-	// how many events to collect into a batch before sending
+	// How many events to collect into a batch before sending. A
+	// batch could be sent before achieving this item limit if the
+	// BatchTimeout has elapsed since the last batch send. If set
+	// to zero, batches will only be sent upon reaching the
+	// BatchTimeout. It is an error for both this and
+	// the BatchTimeout to be zero.
+	// Default: 50 (from Config.MaxBatchSize)
 	MaxBatchSize uint
 
-	// how often to send off batches
+	// How often to send batches. Events queue up into a batch until
+	// this time has elapsed or the batch item limit is reached
+	// (MaxBatchSize), then the batch is sent to Honeycomb API.
+	// If set to zero, batches will only be sent upon reaching the
+	// MaxBatchSize item limit. It is an error for both this and
+	// the MaxBatchSize to be zero.
+	// Default: 100 milliseconds (from Config.SendFrequency)
 	BatchTimeout time.Duration
+
+	// The start-to-finish timeout for HTTP requests sending event
+	// batches to the Honeycomb API. Transmission will retry once
+	// when receiving a timeout, so total time spent attempting to
+	// send events could be twice this value.
+	// Default: 60 seconds.
+	BatchSendTimeout time.Duration
 
 	// how many batches can be inflight simultaneously
 	MaxConcurrentBatches uint
@@ -83,6 +125,10 @@ type Opsramptraceproxy struct {
 	batchMaker func() muster.Batch
 	responses  chan Response
 
+	// Transport defines the behavior of the lower layer transport details.
+	// It is used as the Transport value for the constructed HTTP client that
+	// sends batches of events.
+	// Default: http.DefaultTransport
 	Transport http.RoundTripper
 
 	muster     *muster.Client
@@ -94,19 +140,17 @@ type Opsramptraceproxy struct {
 	UseTls         bool
 	UseTlsInsecure bool
 
-	OpsrampKey	string
+	OpsrampKey    string
 	OpsrampSecret string
-	ApiHost 	string
+	ApiHost       string
 }
-
 
 type OpsRampAuthTokenResponse struct {
 	AccessToken string `json:"access_token"`
 	TokenType   string `json:"token_type"`
-	ExpiresIn   int64    `json:"expires_in"`
+	ExpiresIn   int64  `json:"expires_in"`
 	Scope       string `json:"scope"`
 }
-
 
 func (h *Opsramptraceproxy) Start() error {
 	if h.Logger == nil {
@@ -117,6 +161,9 @@ func (h *Opsramptraceproxy) Start() error {
 	if h.Metrics == nil {
 		h.Metrics = &nullMetrics{}
 	}
+	if h.BatchSendTimeout == 0 {
+		h.BatchSendTimeout = defaultSendTimeout
+	}
 	if h.batchMaker == nil {
 		h.batchMaker = func() muster.Batch {
 			return &batchAgg{
@@ -124,7 +171,7 @@ func (h *Opsramptraceproxy) Start() error {
 				batches:           map[string][]*Event{},
 				httpClient: &http.Client{
 					Transport: h.Transport,
-					Timeout:   60 * time.Second,
+					Timeout:   h.BatchSendTimeout,
 				},
 				blockOnResponse:       h.BlockOnResponse,
 				responses:             h.responses,
@@ -134,17 +181,16 @@ func (h *Opsramptraceproxy) Start() error {
 				logger:                h.Logger,
 				useTls:                h.UseTls,
 				useTlsInsecure:        h.UseTlsInsecure,
-				OpsrampKey: 		   h.OpsrampKey,
-				OpsrampSecret:		   h.OpsrampSecret,
-				ApiHost:			   h.ApiHost,
+				OpsrampKey:            h.OpsrampKey,
+				OpsrampSecret:         h.OpsrampSecret,
+				ApiHost:               h.ApiHost,
 			}
 		}
 	}
 
-
 	OpsrampKey = h.OpsrampKey
 	OpsrampSecret = h.OpsrampSecret
-	ApiEndPoint =  h.ApiHost
+	ApiEndPoint = h.ApiHost
 	mutex.Lock()
 	Opsramptoken = opsrampOauthToken()
 	mutex.Unlock()
@@ -153,8 +199,7 @@ func (h *Opsramptraceproxy) Start() error {
 	return h.muster.Start()
 }
 
-func opsrampOauthToken() string  {
-
+func opsrampOauthToken() string {
 
 	url := fmt.Sprintf("%s/auth/oauth/token", strings.TrimRight(ApiEndPoint, "/"))
 	requestBody := strings.NewReader("client_id=" + OpsrampKey + "&client_secret=" + OpsrampSecret + "&grant_type=client_credentials")
@@ -162,7 +207,6 @@ func opsrampOauthToken() string  {
 	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Add("Accept", "application/json")
 	req.Header.Set("Connection", "close")
-
 
 	resp, _ := http.DefaultClient.Do(req)
 	defer resp.Body.Close()
@@ -298,10 +342,9 @@ type batchAgg struct {
 
 	useTls         bool
 	useTlsInsecure bool
-	OpsrampKey	string
-	OpsrampSecret string
-	ApiHost	string
-
+	OpsrampKey     string
+	OpsrampSecret  string
+	ApiHost        string
 }
 
 // batch is a collection of events that will all be POSTed as one HTTP call
@@ -387,7 +430,6 @@ func (b *batchAgg) Fire(notifier muster.Notifier) {
 //type httpError interface {
 //	Timeout() bool
 //}
-
 
 func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 	var agent bool
@@ -493,7 +535,6 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 				grpc.WithUnaryInterceptor(grpcInterceptor),
 			}
 
-
 		} else {
 			fmt.Println("Connecting without Tls")
 			//conn, err = grpc.Dial(apiHostUrl, grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -509,7 +550,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 		}
 
 		//fmt.Println("conn is %%%%: ",conn)
-		if conn == nil || conn.GetState() == connectivity.TransientFailure || conn.GetState() == connectivity.Shutdown  || string(conn.GetState()) == "INVALID_STATE" {
+		if conn == nil || conn.GetState() == connectivity.TransientFailure || conn.GetState() == connectivity.Shutdown || string(conn.GetState()) == "INVALID_STATE" {
 			//fmt.Println("inside conn if conn is %%%%: ",conn)
 			mutex.Lock()
 			conn, err = grpc.Dial(apiHostUrl, opts...)
@@ -522,13 +563,10 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 			}
 		}
 
-
-
 		//auth, _ := oauth.NewApplicationDefault(context.Background(), "")
 		//conn, err := grpc.Dial(apiHost, grpc.WithPerRPCCredentials(auth))
 
 		//fmt.Println("after conn if conn is %%%%: ",conn)
-
 
 		c := proxypb.NewTraceProxyServiceClient(conn)
 
@@ -657,12 +695,12 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 
 		defer cancel()
 		r, err := c.ExportTraceProxy(ctx, &req)
-		if err != nil ||  r.GetStatus() == ""   {
+		if err != nil || r.GetStatus() == "" {
 			fmt.Printf("could not export traces from proxy in %v try: %v", i, err)
 			b.metrics.Increment("send_errors")
 			//b.metrics.Increment( "counterResponseErrors")
 			continue
-		}else{
+		} else {
 			b.metrics.Increment("batches_sent")
 			//b.metrics.Increment("counterResponse20x")
 		}
@@ -672,8 +710,6 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 		fmt.Printf("\ntrace proxy response status: %s\n", r.GetStatus())
 		break
 	}
-
-
 
 	/*
 		url, err := url.Parse(apiHost)
@@ -849,7 +885,6 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 
 }
 
-
 var grpcInterceptor = func(ctx context.Context,
 	method string,
 	req interface{},
@@ -870,9 +905,6 @@ var grpcInterceptor = func(ctx context.Context,
 	}
 	return err
 }
-
-
-
 
 /*func (b *batchAgg) exportBatch(events []*Event) {
 	fmt.Println("Exporting batch..")
@@ -1147,12 +1179,6 @@ func (b *batchAgg) fireBatch(events []*Event) {
 	// build the HTTP request
 	url.Path = path.Join(url.Path, "/1/batch", dataset)
 
-	// sigh. dislike
-	userAgent := fmt.Sprintf("libhoney-go/%s", Version)
-	if b.userAgentAddition != "" {
-		userAgent = fmt.Sprintf("%s %s", userAgent, strings.TrimSpace(b.userAgentAddition))
-	}
-
 	// One retry allowed for connection timeouts.
 	var resp *http.Response
 	for try := 0; try < 2; try++ {
@@ -1175,7 +1201,7 @@ func (b *batchAgg) fireBatch(events []*Event) {
 			req.Header.Set("Content-Encoding", "zstd")
 		}
 
-		req.Header.Set("User-Agent", userAgent)
+		req.Header.Set("User-Agent", fmtUserAgent(b.userAgentAddition))
 		//req.Header.Add("X-Opsramp-Team", writeKey)
 		// send off batch!
 		resp, err = b.httpClient.Do(req)
@@ -1281,7 +1307,7 @@ func (b *batchAgg) fireBatch(events []*Event) {
 	for _, resp := range batchResponses {
 		resp.Duration = dur / time.Duration(numEncoded)
 		for eIdx < len(events) && events[eIdx] == nil {
-			fmt.Printf("incr, eIdx: %d, len(evs): %d\n", eIdx, len(events))
+			b.logger.Printf("incr, eIdx: %d, len(evs): %d", eIdx, len(events))
 			eIdx++
 		}
 		if eIdx == len(events) { // just in case
@@ -1296,7 +1322,6 @@ func (b *batchAgg) fireBatch(events []*Event) {
 // create the JSON for this event list manually so that we can send
 // responses down the response queue for any that fail to marshal
 func (b *batchAgg) encodeBatchJSON(events []*Event) ([]byte, int) {
-
 
 	// track first vs. rest events for commas
 	first := true

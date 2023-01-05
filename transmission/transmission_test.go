@@ -22,6 +22,8 @@ import (
 	// convincing testing.
 	"github.com/DataDog/zstd"
 	"github.com/facebookgo/muster"
+	"github.com/opsramp/libtrace-go/version"
+	"github.com/stretchr/testify/assert"
 	"github.com/vmihailenco/msgpack/v5"
 )
 
@@ -170,14 +172,15 @@ func (f *FakeRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
 	return f.resp, f.respErr
 }
 
-type OneTimeoutRountTripper struct {
+type TimingOutRoundTripper struct {
 	*FakeRoundTripper
-	doTimeout bool
+	// How many requests sent should time out?
+	numTimeouts int
 }
 
-func (f *OneTimeoutRountTripper) RoundTrip(r *http.Request) (*http.Response, error) {
-	if f.doTimeout {
-		f.doTimeout = false
+func (f *TimingOutRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
+	if f.numTimeouts > 0 {
+		f.numTimeouts--
 		return nil, &timeoutErr{}
 	}
 	return f.FakeRoundTripper.RoundTrip(r)
@@ -200,7 +203,6 @@ func TestTxSendSingle(t *testing.T) {
 			metrics:               &nullMetrics{},
 			enableMsgpackEncoding: doMsgpack,
 		}
-		Version = "1.2.3"
 		reset := func(b *batchAgg, frt *FakeRoundTripper, statusCode int, body string, err error) {
 			if body == "" {
 				frt.resp = nil
@@ -228,8 +230,8 @@ func TestTxSendSingle(t *testing.T) {
 		b.Fire(&testNotifier{})
 		expectedURL := fmt.Sprintf("%s/1/batch/%s", e.APIHost, e.Dataset)
 		testEquals(t, frt.req.URL.String(), expectedURL)
-		versionedUserAgent := fmt.Sprintf("libhoney-go/%s", Version)
-		testEquals(t, frt.req.Header.Get("User-Agent"), versionedUserAgent)
+		versionedUserAgent := fmt.Sprintf("libhoney-go/%s %s", version.Version, runtimeInfo)
+		assert.Equal(t, versionedUserAgent, frt.req.Header.Get("User-Agent"))
 		testEquals(t, frt.req.Header.Get("X-Opsramp-Team"), e.APIKey)
 		buf := &bytes.Buffer{}
 		g := zstd.NewWriter(buf)
@@ -268,11 +270,11 @@ func TestTxSendSingle(t *testing.T) {
 		// test UserAgentAddition
 		b.userAgentAddition = "  fancyApp/3 "
 		expectedUserAgentAddition := "fancyApp/3"
-		longUserAgent := fmt.Sprintf("%s %s", versionedUserAgent, expectedUserAgentAddition)
+		longUserAgent := fmt.Sprintf("libhoney-go/%s %s %s", version.Version, expectedUserAgentAddition, runtimeInfo)
 		reset(b, frt, 200, `[{"status":202}]`, nil)
 		b.Add(e)
 		b.Fire(&testNotifier{})
-		testEquals(t, frt.req.Header.Get("User-Agent"), longUserAgent)
+		assert.Equal(t, longUserAgent, frt.req.Header.Get("User-Agent"))
 		rsp = testGetResponse(t, b.responses)
 		testEquals(t, rsp.StatusCode, 202)
 		testOK(t, rsp.Err)
@@ -382,15 +384,27 @@ func TestTxSendSingle(t *testing.T) {
 
 		// test single http timeout
 		reset(b, frt, 200, `[{"status":202}]`, nil)
-		b.httpClient.Transport = &OneTimeoutRountTripper{
+		b.httpClient.Transport = &TimingOutRoundTripper{
 			FakeRoundTripper: frt,
-			doTimeout:        true,
+			numTimeouts:      1,
 		}
 		b.Add(e)
 		b.Fire(&testNotifier{})
 		rsp = testGetResponse(t, b.responses)
 		testOK(t, rsp.Err)
 		testEquals(t, rsp.StatusCode, 202)
+
+		// test no more than one retry when first attempt times out
+		reset(b, frt, 200, `[{"status":202}]`, nil)
+		b.httpClient.Transport = &TimingOutRoundTripper{
+			FakeRoundTripper: frt,
+			numTimeouts:      2,
+		}
+		b.Add(e)
+		b.Fire(&testNotifier{})
+		rsp = testGetResponse(t, b.responses)
+		testErr(t, rsp.Err)
+		testEquals(t, rsp.Err.Error(), "Post \"http://fakeHost:8080/1/batch/ds1\": timeout")
 	})
 }
 
@@ -804,6 +818,7 @@ func TestFireBatchWithBrokenFirstEvent(t *testing.T) {
 	withJSONAndMsgpack(t, &doMsgpack, func(t *testing.T) {
 		trt := &testRoundTripper{}
 		b := &batchAgg{
+			logger:                &nullLogger{},
 			httpClient:            &http.Client{Transport: trt},
 			testNower:             &fakeNower{},
 			testBlocker:           &sync.WaitGroup{},
@@ -851,6 +866,7 @@ func TestFireBatchWithBrokenMiddleEvent(t *testing.T) {
 	runEvents := func(ev ...*Event) {
 		trt := &testRoundTripper{}
 		b := &batchAgg{
+			logger:     &nullLogger{},
 			httpClient: &http.Client{Transport: trt},
 			testNower:  &fakeNower{},
 			// testBlocker:           &sync.WaitGroup{},
