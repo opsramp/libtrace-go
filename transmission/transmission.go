@@ -645,8 +645,11 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 
 		//Add headers
-		//md := metadata.New(map[string]string{"authorization": token, "tenantId": tenantId})
-		ctx = metadata.AppendToOutgoingContext(ctx, "Authorization", token, "tenantId", tenantId, "dataset", dataset)
+		ctx = metadata.NewOutgoingContext(ctx, metadata.New(map[string]string{
+			"Authorization": token,
+			"tenantId":      tenantId,
+			"dataset":       dataset,
+		}))
 
 		defer cancel()
 		r, err := c.ExportTraceProxy(ctx, &req)
@@ -676,7 +679,7 @@ var grpcInterceptor = func(ctx context.Context,
 	opts ...grpc.CallOption,
 ) error {
 	tokenChecker := fmt.Sprintf("Bearer %s", Opsramptoken)
-	ctx = metadata.NewOutgoingContext(ctx, metadata.New(map[string]string{"Authorization": tokenChecker}))
+	ctx = metadata.AppendToOutgoingContext(ctx, "Authorization", tokenChecker)
 	err := invoker(ctx, method, req, reply, cc, opts...)
 	if status.Code(err) == codes.Unauthenticated {
 		// renew oauth token here before retry
