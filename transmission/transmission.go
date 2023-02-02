@@ -22,38 +22,80 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
-	"io/ioutil"
+	"io"
 	"net/http"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/facebookgo/muster"
-	proxypb "github.com/opsramp/libtrace-go/proto/proxypb"
 	"github.com/klauspost/compress/zstd"
+	proxypb "github.com/opsramp/libtrace-go/proto/proxypb"
+	"github.com/opsramp/libtrace-go/version"
 	"github.com/vmihailenco/msgpack/v5"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/connectivity"
 )
 
 const (
-	apiMaxBatchSize    int = 5000000 // 5MB
-	apiEventSizeMax    int = 100000  // 100KB
+	// Size limit for a serialized request body sent for a batch.
+	apiMaxBatchSize int = 5000000 // 5MB
+	// Size limit for a single serialized event within a batch.
+	apiEventSizeMax    int = 100000 // 100KB
 	maxOverflowBatches int = 10
+	// Default start-to-finish timeout for batch send HTTP requests.
+	defaultSendTimeout = time.Second * 60
 )
 
-// Version is the build version, set by libhoney
-var Version string
+var (
+	// Libhoney's portion of the User-Agent header, e.g. "libhoney/1.2.3"
+	baseUserAgent = fmt.Sprintf("libtrace-go/%s", version.Version)
+	// Information about the runtime environment for inclusion in User-Agent
+	runtimeInfo = fmt.Sprintf("%s (%s/%s)", strings.Replace(runtime.Version(), "go", "go/", 1), runtime.GOOS, runtime.GOARCH)
+	// The default User-Agent when no additions have been given
+	defaultUserAgent = fmt.Sprintf("%s %s", baseUserAgent, runtimeInfo)
+)
+
+// Return a user-agent value including any additions made in the configuration
+func fmtUserAgent(addition string) string {
+	if addition != "" {
+		return fmt.Sprintf("%s %s %s", baseUserAgent, strings.TrimSpace(addition), runtimeInfo)
+	} else {
+		return defaultUserAgent
+	}
+}
+
 var Opsramptoken, OpsrampKey, OpsrampSecret, ApiEndPoint string
 var mutex sync.Mutex
 var conn *grpc.ClientConn
 var opts []grpc.DialOption
+
 type Opsramptraceproxy struct {
-	// how many events to collect into a batch before sending
+	// How many events to collect into a batch before sending. A
+	// batch could be sent before achieving this item limit if the
+	// BatchTimeout has elapsed since the last batch send. If set
+	// to zero, batches will only be sent upon reaching the
+	// BatchTimeout. It is an error for both this and
+	// the BatchTimeout to be zero.
+	// Default: 50 (from Config.MaxBatchSize)
 	MaxBatchSize uint
 
-	// how often to send off batches
+	// How often to send batches. Events queue up into a batch until
+	// this time has elapsed or the batch item limit is reached
+	// (MaxBatchSize), then the batch is sent to Honeycomb API.
+	// If set to zero, batches will only be sent upon reaching the
+	// MaxBatchSize item limit. It is an error for both this and
+	// the MaxBatchSize to be zero.
+	// Default: 100 milliseconds (from Config.SendFrequency)
 	BatchTimeout time.Duration
+
+	// The start-to-finish timeout for HTTP requests sending event
+	// batches to the Honeycomb API. Transmission will retry once
+	// when receiving a timeout, so total time spent attempting to
+	// send events could be twice this value.
+	// Default: 60 seconds.
+	BatchSendTimeout time.Duration
 
 	// how many batches can be inflight simultaneously
 	MaxConcurrentBatches uint
@@ -83,6 +125,10 @@ type Opsramptraceproxy struct {
 	batchMaker func() muster.Batch
 	responses  chan Response
 
+	// Transport defines the behavior of the lower layer transport details.
+	// It is used as the Transport value for the constructed HTTP client that
+	// sends batches of events.
+	// Default: http.DefaultTransport
 	Transport http.RoundTripper
 
 	muster     *muster.Client
@@ -94,19 +140,17 @@ type Opsramptraceproxy struct {
 	UseTls         bool
 	UseTlsInsecure bool
 
-	OpsrampKey	string
+	OpsrampKey    string
 	OpsrampSecret string
-	ApiHost 	string
+	ApiHost       string
 }
-
 
 type OpsRampAuthTokenResponse struct {
 	AccessToken string `json:"access_token"`
 	TokenType   string `json:"token_type"`
-	ExpiresIn   int64    `json:"expires_in"`
+	ExpiresIn   int64  `json:"expires_in"`
 	Scope       string `json:"scope"`
 }
-
 
 func (h *Opsramptraceproxy) Start() error {
 	if h.Logger == nil {
@@ -117,6 +161,9 @@ func (h *Opsramptraceproxy) Start() error {
 	if h.Metrics == nil {
 		h.Metrics = &nullMetrics{}
 	}
+	if h.BatchSendTimeout == 0 {
+		h.BatchSendTimeout = defaultSendTimeout
+	}
 	if h.batchMaker == nil {
 		h.batchMaker = func() muster.Batch {
 			return &batchAgg{
@@ -124,7 +171,7 @@ func (h *Opsramptraceproxy) Start() error {
 				batches:           map[string][]*Event{},
 				httpClient: &http.Client{
 					Transport: h.Transport,
-					Timeout:   60 * time.Second,
+					Timeout:   h.BatchSendTimeout,
 				},
 				blockOnResponse:       h.BlockOnResponse,
 				responses:             h.responses,
@@ -134,17 +181,16 @@ func (h *Opsramptraceproxy) Start() error {
 				logger:                h.Logger,
 				useTls:                h.UseTls,
 				useTlsInsecure:        h.UseTlsInsecure,
-				OpsrampKey: 		   h.OpsrampKey,
-				OpsrampSecret:		   h.OpsrampSecret,
-				ApiHost:			   h.ApiHost,
+				OpsrampKey:            h.OpsrampKey,
+				OpsrampSecret:         h.OpsrampSecret,
+				ApiHost:               h.ApiHost,
 			}
 		}
 	}
 
-
 	OpsrampKey = h.OpsrampKey
 	OpsrampSecret = h.OpsrampSecret
-	ApiEndPoint =  h.ApiHost
+	ApiEndPoint = h.ApiHost
 	mutex.Lock()
 	Opsramptoken = opsrampOauthToken()
 	mutex.Unlock()
@@ -153,8 +199,7 @@ func (h *Opsramptraceproxy) Start() error {
 	return h.muster.Start()
 }
 
-func opsrampOauthToken() string  {
-
+func opsrampOauthToken() string {
 
 	url := fmt.Sprintf("%s/auth/oauth/token", strings.TrimRight(ApiEndPoint, "/"))
 	requestBody := strings.NewReader("client_id=" + OpsrampKey + "&client_secret=" + OpsrampSecret + "&grant_type=client_credentials")
@@ -163,11 +208,10 @@ func opsrampOauthToken() string  {
 	req.Header.Add("Accept", "application/json")
 	req.Header.Set("Connection", "close")
 
-
 	resp, _ := http.DefaultClient.Do(req)
 	defer resp.Body.Close()
 
-	respBody, _ := ioutil.ReadAll(resp.Body)
+	respBody, _ := io.ReadAll(resp.Body)
 	var tokenResponse OpsRampAuthTokenResponse
 	_ = json.Unmarshal(respBody, &tokenResponse)
 	return tokenResponse.AccessToken
@@ -275,7 +319,7 @@ func (h *Opsramptraceproxy) SendResponse(r Response) bool {
 // batchAgg is a batch aggregator - it's actually collecting what will
 // eventually be one or more batches sent to the /1/batch/dataset endpoint.
 type batchAgg struct {
-	// map of batch key to a list of events destined for that batch
+	// map of batch keys to a list of events destined for that batch
 	batches map[string][]*Event
 	// Used to reenque events when an initial batch is too large
 	overflowBatches       map[string][]*Event
@@ -286,11 +330,11 @@ type batchAgg struct {
 	enableMsgpackEncoding bool
 
 	responses chan Response
-	// numEncoded       int
+	// numEncoded int
 
 	metrics Metrics
 
-	// allows manipulation of the value of "now" for testing
+	// allows manipulating value of "now" for testing
 	testNower   nower
 	testBlocker *sync.WaitGroup
 
@@ -298,10 +342,9 @@ type batchAgg struct {
 
 	useTls         bool
 	useTlsInsecure bool
-	OpsrampKey	string
-	OpsrampSecret string
-	ApiHost	string
-
+	OpsrampKey     string
+	OpsrampSecret  string
+	ApiHost        string
 }
 
 // batch is a collection of events that will all be POSTed as one HTTP call
@@ -388,10 +431,8 @@ func (b *batchAgg) Fire(notifier muster.Notifier) {
 //	Timeout() bool
 //}
 
-
 func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 	var agent bool
-	fmt.Println("Exporting ProtoMsg batch...")
 	//start := time.Now().UTC()
 	//if b.testNower != nil {
 	//	start = b.testNower.Now()
@@ -405,12 +446,9 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 	}
 
 	var numEncoded int
-	var encEvs []byte
 	//var contentType string
 	//contentType = "application/grpc"
-	encEvs, numEncoded = b.encodeBatchProtoBuf(events)
-
-	fmt.Println("Export protobuf batch data:", string(encEvs))
+	_, numEncoded = b.encodeBatchProtoBuf(events)
 
 	// if we failed to encode any events skip this batch
 	if numEncoded == 0 {
@@ -442,10 +480,8 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 		}
 	}
 
-	fmt.Printf("\ntenantId: %v", tenantId)
-
 	if tenantId == "" {
-		fmt.Println("Skipping as TenantId is empty")
+		b.logger.Printf("Skipping as TenantId is empty")
 		return
 	}
 
@@ -458,21 +494,6 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 		apiHostUrl = apiHost
 	}
 
-	fmt.Printf("\napiHost: %v\n", apiHost)
-
-	//Root Cert
-	//cServer, _ := ioutil.ReadFile("/etc/ssl/certs/ca-certificates.crt")
-	//cp := x509.NewCertPool()
-	//if !cp.AppendCertsFromPEM(cServer) {
-	//	fmt.Printf("\ncredentials: failed to append certificates")
-	//}
-	//
-	//tlsCfg := &tls.Config{
-	//	MinVersion:         tls.VersionTLS12,
-	//	InsecureSkipVerify: true,
-	//	ServerName:         apiHost,
-	//	RootCAs:            cp,
-	//}
 	retryCount := 3
 	for i := 0; i < retryCount; i++ {
 		if i > 0 {
@@ -487,15 +508,14 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 			}
 
 			tlsCreds := credentials.NewTLS(tlsCfg)
-			fmt.Println("Connecting with Tls")
+			b.logger.Printf("Connecting with Tls")
 			opts = []grpc.DialOption{
 				grpc.WithTransportCredentials(tlsCreds),
 				grpc.WithUnaryInterceptor(grpcInterceptor),
 			}
 
-
 		} else {
-			fmt.Println("Connecting without Tls")
+			b.logger.Printf("Connecting without Tls")
 			//conn, err = grpc.Dial(apiHostUrl, grpc.WithTransportCredentials(insecure.NewCredentials()))
 			opts = []grpc.DialOption{
 				grpc.WithTransportCredentials(insecure.NewCredentials()),
@@ -508,42 +528,29 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 			mutex.Unlock()
 		}
 
-		//fmt.Println("conn is %%%%: ",conn)
-		if conn == nil || conn.GetState() == connectivity.TransientFailure || conn.GetState() == connectivity.Shutdown  || string(conn.GetState()) == "INVALID_STATE" {
-			//fmt.Println("inside conn if conn is %%%%: ",conn)
+		if conn == nil || conn.GetState() == connectivity.TransientFailure || conn.GetState() == connectivity.Shutdown || string(conn.GetState()) == "INVALID_STATE" {
 			mutex.Lock()
 			conn, err = grpc.Dial(apiHostUrl, opts...)
 			mutex.Unlock()
 			if err != nil {
-				fmt.Printf("Could not connect: %v", err)
+				b.logger.Printf("Could not connect: %v", err)
 				b.metrics.Increment("send_errors")
-
 				return
 			}
 		}
-
-
-
-		//auth, _ := oauth.NewApplicationDefault(context.Background(), "")
-		//conn, err := grpc.Dial(apiHost, grpc.WithPerRPCCredentials(auth))
-
-		//fmt.Println("after conn if conn is %%%%: ",conn)
-
 
 		c := proxypb.NewTraceProxyServiceClient(conn)
 
 		req := proxypb.ExportTraceProxyServiceRequest{}
 
 		req.TenantId = tenantId
-		//err = json.Unmarshal(encEvs, &req.Items)
-		//if err != nil {
-		//	fmt.Printf("Error: %v \n", err)
-		//}
 
 		for _, ev := range events {
+			b.logger.Printf("event data: %+v", ev.Data)
+
 			traceData := proxypb.ProxySpan{}
 			traceData.Data = &proxypb.Data{}
-			fmt.Printf("\nData: ", ev.Data)
+
 			traceData.Data.TraceTraceID, _ = ev.Data["traceTraceID"].(string)
 			traceData.Data.TraceParentID, _ = ev.Data["traceParentID"].(string)
 			traceData.Data.TraceSpanID, _ = ev.Data["traceSpanID"].(string)
@@ -564,7 +571,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 			traceData.Data.Error, _ = ev.Data["error"].(bool)
 			traceData.Data.FromProxy, _ = ev.Data["fromProxy"].(bool)
 			traceData.Data.ParentName, _ = ev.Data["parentName"].(string)
-			traceData.Timestamp = ev.Timestamp.String()
+			traceData.Timestamp = ev.Timestamp.Format(time.RFC3339Nano)
 
 			resourceAttr, _ := ev.Data["resourceAttributes"].(map[string]interface{})
 			for key, val := range resourceAttr {
@@ -573,7 +580,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 
 				switch v := val.(type) {
 				case nil:
-					fmt.Println("x is nil") // here v has type interface{}
+					b.logger.Printf("x is nil") // here v has type interface{}
 				case string:
 					resourceAttrKeyVal.Value = &proxypb.AnyValue{Value: &proxypb.AnyValue_StringValue{StringValue: val.(string)}} // here v has type int
 				case bool:
@@ -581,7 +588,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 				case int64:
 					resourceAttrKeyVal.Value = &proxypb.AnyValue{Value: &proxypb.AnyValue_IntValue{IntValue: val.(int64)}} // here v has type interface{}
 				default:
-					fmt.Println("type unknown: ", v) // here v has type interface{}
+					b.logger.Printf("type unknown: ", v) // here v has type interface{}
 				}
 
 				traceData.Data.ResourceAttributes = append(traceData.Data.ResourceAttributes, &resourceAttrKeyVal)
@@ -594,7 +601,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 
 				switch v := val.(type) {
 				case nil:
-					fmt.Println("x is nil") // here v has type interface{}
+					b.logger.Printf("x is nil") // here v has type interface{}
 				case string:
 					spanAttrKeyVal.Value = &proxypb.AnyValue{Value: &proxypb.AnyValue_StringValue{StringValue: val.(string)}} // here v has type int
 				case bool:
@@ -602,7 +609,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 				case int64:
 					spanAttrKeyVal.Value = &proxypb.AnyValue{Value: &proxypb.AnyValue_IntValue{IntValue: val.(int64)}} // here v has type interface{}
 				default:
-					fmt.Println("type unknown: ", v) // here v has type interface{}
+					b.logger.Printf("type unknown: %v", v) // here v has type interface{}
 				}
 
 				traceData.Data.SpanAttributes = append(traceData.Data.SpanAttributes, &spanAttrKeyVal)
@@ -616,7 +623,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 
 				switch v := val.(type) {
 				case nil:
-					fmt.Println("x is nil") // here v has type interface{}
+					b.logger.Printf("x is nil") // here v has type interface{}
 				case string:
 					eventAttrKeyVal.Value = &proxypb.AnyValue{Value: &proxypb.AnyValue_StringValue{StringValue: val.(string)}} // here v has type int
 				case bool:
@@ -624,7 +631,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 				case int64:
 					eventAttrKeyVal.Value = &proxypb.AnyValue{Value: &proxypb.AnyValue_IntValue{IntValue: val.(int64)}} // here v has type interface{}
 				default:
-					fmt.Println("type unknown: ", v) // here v has type interface{}
+					b.logger.Printf("type unknown: %v", v) // here v has type interface{}
 				}
 
 				traceData.Data.EventAttributes = append(traceData.Data.EventAttributes, &eventAttrKeyVal)
@@ -632,223 +639,36 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 
 			req.Items = append(req.Items, &traceData)
 
-			/*var tracedata []proxypb.Data
-			err = json.Unmarshal(encEvs, &tracedata)
-				if err != nil {
-					fmt.Printf("Error: %v \n", err)
-				} else {
-					for _,trData:= range tracedata{
-						traceData := proxypb.ProxySpan{}
-						traceData.Data = &trData
-						traceData.Time = uint64(ev.Timestamp.Unix())
-						req.Items = append(req.Items, &traceData)
-					}
-				}
-			*/
-
 		}
 
 		// Contact the server and print out its response.
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 
 		//Add headers
-		//md := metadata.New(map[string]string{"authorization": token, "tenantId": tenantId})
-		ctx = metadata.AppendToOutgoingContext(ctx, "Authorization", token, "tenantId", tenantId, "dataset", dataset)
+		ctx = metadata.NewOutgoingContext(ctx, metadata.New(map[string]string{
+			"Authorization": token,
+			"tenantId":      tenantId,
+			"dataset":       dataset,
+		}))
 
 		defer cancel()
 		r, err := c.ExportTraceProxy(ctx, &req)
-		if err != nil ||  r.GetStatus() == ""   {
-			fmt.Printf("could not export traces from proxy in %v try: %v", i, err)
+		if err != nil || r.GetStatus() == "" {
+			b.logger.Printf("could not export traces from proxy in %v try: %v", i, err)
 			b.metrics.Increment("send_errors")
 			//b.metrics.Increment( "counterResponseErrors")
 			continue
-		}else{
+		} else {
 			b.metrics.Increment("batches_sent")
 			//b.metrics.Increment("counterResponse20x")
 		}
 
-		fmt.Printf("\ntrace proxy response: %s\n", r.String())
-		fmt.Printf("\ntrace proxy response msg: %s\n", r.GetMessage())
-		fmt.Printf("\ntrace proxy response status: %s\n", r.GetStatus())
+		b.logger.Printf("trace proxy response: %s", r.String())
+		b.logger.Printf("trace proxy response msg: %s", r.GetMessage())
+		b.logger.Printf("trace proxy response status: %s", r.GetStatus())
 		break
 	}
-
-
-
-	/*
-		url, err := url.Parse(apiHost)
-		if err != nil {
-			end := time.Now().UTC()
-			if b.testNower != nil {
-				end = b.testNower.Now()
-			}
-			dur := end.Sub(start)
-			b.metrics.Increment("send_errors")
-			for _, ev := range events {
-				// Pass the parsing error down responses channel for each event that
-				// didn't already error during encoding
-				if ev != nil {
-					b.enqueueResponse(Response{
-						Duration: dur / time.Duration(numEncoded),
-						Metadata: ev.Metadata,
-						Err:      err,
-					})
-				}
-			}
-			return
-		}
-
-		// build the HTTP request
-		url.Path = path.Join(url.Path, "/1/batch", dataset)
-
-		// sigh. dislike
-		userAgent := fmt.Sprintf("libhoney-go/%s", Version)
-		if b.userAgentAddition != "" {
-			userAgent = fmt.Sprintf("%s %s", userAgent, strings.TrimSpace(b.userAgentAddition))
-		}
-
-		// One retry allowed for connection timeouts.
-		var resp *http.Response
-		for try := 0; try < 2; try++ {
-			if try > 0 {
-				b.metrics.Increment("send_retries")
-			}
-
-			var req *http.Request
-			reqBody, zipped := buildReqReader(encEvs, !b.disableCompression)
-			if reader, ok := reqBody.(*pooledReader); ok {
-				// Pass the underlying bytes.Reader to http.Request so that
-				// GetBody and ContentLength fields are populated on Request.
-				// See https://cs.opensource.google/go/go/+/refs/tags/go1.17.5:src/net/http/request.go;l=898
-				req, err = http.NewRequest("POST", url.String(), &reader.Reader)
-			} else {
-				req, err = http.NewRequest("POST", url.String(), reqBody)
-			}
-			req.Header.Set("Content-Type", contentType)
-			if zipped {
-				req.Header.Set("Content-Encoding", "zstd")
-			}
-
-			req.Header.Set("User-Agent", userAgent)
-			//req.Header.Add("X-Opsramp-Team", writeKey)
-			// send off batch!
-			resp, err = b.httpClient.Do(req)
-			if reader, ok := reqBody.(*pooledReader); ok {
-				reader.Release()
-			}
-
-			if httpErr, ok := err.(httpError); ok && httpErr.Timeout() {
-				continue
-			}
-			break
-		}
-		end := time.Now().UTC()
-		if b.testNower != nil {
-			end = b.testNower.Now()
-		}
-		dur := end.Sub(start)
-
-		// if the entire HTTP POST failed, send a failed response for every event
-		if err != nil {
-			b.metrics.Increment("send_errors")
-			// Pass the top-level send error down responses channel for each event
-			// that didn't already error during encoding
-			b.enqueueErrResponses(err, events, dur/time.Duration(numEncoded))
-			// the POST failed so we're done with this batch key's worth of events
-			return
-		}
-
-		// ok, the POST succeeded, let's process each individual response
-		b.metrics.Increment("batches_sent")
-		b.metrics.Count("messages_sent", numEncoded)
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			b.metrics.Increment("send_errors")
-
-			var err error
-			var body []byte
-			if resp.Header.Get("Content-Type") == "application/msgpack" {
-				var errorBody interface{}
-				decoder := msgpack.NewDecoder(resp.Body)
-				err = decoder.Decode(&errorBody)
-				if err == nil {
-					body, err = json.Marshal(&errorBody)
-				}
-			} else {
-				body, err = ioutil.ReadAll(resp.Body)
-			}
-			if err != nil {
-				b.enqueueErrResponses(
-					fmt.Errorf("Got HTTP error code but couldn't read response body: %v", err),
-					events,
-					dur/time.Duration(numEncoded),
-				)
-				return
-			}
-			// log if write key was rejected because of invalid Write / API key
-			if resp.StatusCode == http.StatusUnauthorized {
-				b.logger.Printf("APIKey '%s' was rejected. Please verify APIKey is correct.", writeKey)
-			}
-			for _, ev := range events {
-				err := fmt.Errorf(
-					"got unexpected HTTP status %d: %s",
-					resp.StatusCode,
-					http.StatusText(resp.StatusCode),
-				)
-				if ev != nil {
-					b.enqueueResponse(Response{
-						StatusCode: resp.StatusCode,
-						Body:       body,
-						Duration:   dur / time.Duration(numEncoded),
-						Metadata:   ev.Metadata,
-						Err:        err,
-					})
-				}
-			}
-			return
-		}
-
-		// decode the responses
-		var batchResponses []Response
-		if resp.Header.Get("Content-Type") == "application/msgpack" {
-			err = msgpack.NewDecoder(resp.Body).Decode(&batchResponses)
-		} else {
-			err = json.NewDecoder(resp.Body).Decode(&batchResponses)
-		}
-		if err != nil {
-			// if we can't decode the responses, just error out all of them
-			b.metrics.Increment("response_decode_errors")
-			b.enqueueErrResponses(fmt.Errorf(
-				"got OK HTTP response, but couldn't read response body: %v", err),
-				events,
-				dur/time.Duration(numEncoded),
-			)
-			return
-		}
-
-		// Go through the responses and send them down the queue. If an Event
-		// triggered a JSON error, it wasn't sent to the server and won't have a
-		// returned response... so we have to be a bit more careful matching up
-		// responses with Events.
-		var eIdx int
-		for _, resp := range batchResponses {
-			resp.Duration = dur / time.Duration(numEncoded)
-			for eIdx < len(events) && events[eIdx] == nil {
-				fmt.Printf("incr, eIdx: %d, len(evs): %d\n", eIdx, len(events))
-				eIdx++
-			}
-			if eIdx == len(events) { // just in case
-				break
-			}
-			resp.Metadata = events[eIdx].Metadata
-			b.enqueueResponse(resp)
-			eIdx++
-		}
-	*/
-
 }
-
 
 var grpcInterceptor = func(ctx context.Context,
 	method string,
@@ -859,444 +679,20 @@ var grpcInterceptor = func(ctx context.Context,
 	opts ...grpc.CallOption,
 ) error {
 	tokenChecker := fmt.Sprintf("Bearer %s", Opsramptoken)
-	ctx = metadata.NewOutgoingContext(ctx, metadata.New(map[string]string{"Authorization": tokenChecker}))
+	ctx = metadata.AppendToOutgoingContext(ctx, "Authorization", tokenChecker)
 	err := invoker(ctx, method, req, reply, cc, opts...)
 	if status.Code(err) == codes.Unauthenticated {
 		// renew oauth token here before retry
 		mutex.Lock()
 		Opsramptoken = opsrampOauthToken()
 		mutex.Unlock()
-		fmt.Println("Auth token is renewed")
 	}
 	return err
 }
 
-
-
-
-/*func (b *batchAgg) exportBatch(events []*Event) {
-	fmt.Println("Exporting batch..")
-	start := time.Now().UTC()
-	if b.testNower != nil {
-		start = b.testNower.Now()
-	}
-	if len(events) == 0 {
-		// we managed to create a batch key with no events. odd. move on.
-		return
-	}
-
-	var numEncoded int
-	var encEvs []byte
-	var contentType string
-	if b.enableMsgpackEncoding {
-		contentType = "application/msgpack"
-		encEvs, numEncoded = b.encodeBatchMsgp(events)
-	} else {
-		contentType = "application/json"
-		encEvs, numEncoded = b.encodeBatchJSON(events)
-	}
-	fmt.Println("Export batch data:", string(encEvs))
-
-	// if we failed to encode any events skip this batch
-	if numEncoded == 0 {
-		return
-	}
-
-	// get some attributes common to this entire batch up front off the first
-	// valid event (some may be nil)
-	var apiHost, dataset string
-	for _, ev := range events {
-		if ev != nil {
-			apiHost = ev.APIHost
-			//writeKey = ev.APIKey
-			dataset = ev.Dataset
-			break
-		}
-	}
-
-	url, err := url.Parse(apiHost)
-	if err != nil {
-		end := time.Now().UTC()
-		if b.testNower != nil {
-			end = b.testNower.Now()
-		}
-		dur := end.Sub(start)
-		b.metrics.Increment("send_errors")
-		for _, ev := range events {
-			// Pass the parsing error down responses channel for each event that
-			// didn't already error during encoding
-			if ev != nil {
-				b.enqueueResponse(Response{
-					Duration: dur / time.Duration(numEncoded),
-					Metadata: ev.Metadata,
-					Err:      err,
-				})
-			}
-		}
-		return
-	}
-
-	// build the HTTP request
-	url.Path = path.Join(url.Path, "/1/batch", dataset)
-
-	// sigh. dislike
-	userAgent := fmt.Sprintf("libhoney-go/%s", Version)
-	if b.userAgentAddition != "" {
-		userAgent = fmt.Sprintf("%s %s", userAgent, strings.TrimSpace(b.userAgentAddition))
-	}
-
-	// One retry allowed for connection timeouts.
-	var resp *http.Response
-	for try := 0; try < 2; try++ {
-		if try > 0 {
-			b.metrics.Increment("send_retries")
-		}
-
-		var req *http.Request
-		reqBody, zipped := buildReqReader(encEvs, !b.disableCompression)
-		if reader, ok := reqBody.(*pooledReader); ok {
-			// Pass the underlying bytes.Reader to http.Request so that
-			// GetBody and ContentLength fields are populated on Request.
-			// See https://cs.opensource.google/go/go/+/refs/tags/go1.17.5:src/net/http/request.go;l=898
-			req, err = http.NewRequest("POST", url.String(), &reader.Reader)
-		} else {
-			req, err = http.NewRequest("POST", url.String(), reqBody)
-		}
-		req.Header.Set("Content-Type", contentType)
-		if zipped {
-			req.Header.Set("Content-Encoding", "zstd")
-		}
-
-		req.Header.Set("User-Agent", userAgent)
-		//req.Header.Add("X-Opsramp-Team", writeKey)
-		// send off batch!
-		resp, err = b.httpClient.Do(req)
-		if reader, ok := reqBody.(*pooledReader); ok {
-			reader.Release()
-		}
-
-		if httpErr, ok := err.(httpError); ok && httpErr.Timeout() {
-			continue
-		}
-		break
-	}
-	end := time.Now().UTC()
-	if b.testNower != nil {
-		end = b.testNower.Now()
-	}
-	dur := end.Sub(start)
-
-	// if the entire HTTP POST failed, send a failed response for every event
-	if err != nil {
-		b.metrics.Increment("send_errors")
-		// Pass the top-level send error down responses channel for each event
-		// that didn't already error during encoding
-		b.enqueueErrResponses(err, events, dur/time.Duration(numEncoded))
-		// the POST failed so we're done with this batch key's worth of events
-		return
-	}
-
-	// ok, the POST succeeded, let's process each individual response
-	b.metrics.Increment("batches_sent")
-	b.metrics.Count("messages_sent", numEncoded)
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		b.metrics.Increment("send_errors")
-
-		var err error
-		var body []byte
-		if resp.Header.Get("Content-Type") == "application/msgpack" {
-			var errorBody interface{}
-			decoder := msgpack.NewDecoder(resp.Body)
-			err = decoder.Decode(&errorBody)
-			if err == nil {
-				body, err = json.Marshal(&errorBody)
-			}
-		} else {
-			body, err = ioutil.ReadAll(resp.Body)
-		}
-		if err != nil {
-			b.enqueueErrResponses(
-				fmt.Errorf("Got HTTP error code but couldn't read response body: %v", err),
-				events,
-				dur/time.Duration(numEncoded),
-			)
-			return
-		}
-		// log if write key was rejected because of invalid Write / API key
-		if resp.StatusCode == http.StatusUnauthorized {
-			b.logger.Printf("APIKey '%s' was rejected. Please verify APIKey is correct.", writeKey)
-		}
-		for _, ev := range events {
-			err := fmt.Errorf(
-				"got unexpected HTTP status %d: %s",
-				resp.StatusCode,
-				http.StatusText(resp.StatusCode),
-			)
-			if ev != nil {
-				b.enqueueResponse(Response{
-					StatusCode: resp.StatusCode,
-					Body:       body,
-					Duration:   dur / time.Duration(numEncoded),
-					Metadata:   ev.Metadata,
-					Err:        err,
-				})
-			}
-		}
-		return
-	}
-
-	// decode the responses
-	var batchResponses []Response
-	if resp.Header.Get("Content-Type") == "application/msgpack" {
-		err = msgpack.NewDecoder(resp.Body).Decode(&batchResponses)
-	} else {
-		err = json.NewDecoder(resp.Body).Decode(&batchResponses)
-	}
-	if err != nil {
-		// if we can't decode the responses, just error out all of them
-		b.metrics.Increment("response_decode_errors")
-		b.enqueueErrResponses(fmt.Errorf(
-			"got OK HTTP response, but couldn't read response body: %v", err),
-			events,
-			dur/time.Duration(numEncoded),
-		)
-		return
-	}
-
-	// Go through the responses and send them down the queue. If an Event
-	// triggered a JSON error, it wasn't sent to the server and won't have a
-	// returned response... so we have to be a bit more careful matching up
-	// responses with Events.
-	var eIdx int
-	for _, resp := range batchResponses {
-		resp.Duration = dur / time.Duration(numEncoded)
-		for eIdx < len(events) && events[eIdx] == nil {
-			fmt.Printf("incr, eIdx: %d, len(evs): %d\n", eIdx, len(events))
-			eIdx++
-		}
-		if eIdx == len(events) { // just in case
-			break
-		}
-		resp.Metadata = events[eIdx].Metadata
-		b.enqueueResponse(resp)
-		eIdx++
-	}
-}
-
-func (b *batchAgg) fireBatch(events []*Event) {
-	start := time.Now().UTC()
-	if b.testNower != nil {
-		start = b.testNower.Now()
-	}
-	if len(events) == 0 {
-		// we managed to create a batch key with no events. odd. move on.
-		return
-	}
-
-	var numEncoded int
-	var encEvs []byte
-	var contentType string
-	if b.enableMsgpackEncoding {
-		contentType = "application/msgpack"
-		encEvs, numEncoded = b.encodeBatchMsgp(events)
-	} else {
-		contentType = "application/json"
-		encEvs, numEncoded = b.encodeBatchJSON(events)
-	}
-	// if we failed to encode any events skip this batch
-	if numEncoded == 0 {
-		return
-	}
-
-	// get some attributes common to this entire batch up front off the first
-	// valid event (some may be nil)
-	var apiHost, dataset string
-	for _, ev := range events {
-		if ev != nil {
-			apiHost = ev.APIHost
-			//writeKey = ev.APIKey
-			dataset = ev.Dataset
-			break
-		}
-	}
-
-	url, err := url.Parse(apiHost)
-	if err != nil {
-		end := time.Now().UTC()
-		if b.testNower != nil {
-			end = b.testNower.Now()
-		}
-		dur := end.Sub(start)
-		b.metrics.Increment("send_errors")
-		for _, ev := range events {
-			// Pass the parsing error down responses channel for each event that
-			// didn't already error during encoding
-			if ev != nil {
-				b.enqueueResponse(Response{
-					Duration: dur / time.Duration(numEncoded),
-					Metadata: ev.Metadata,
-					Err:      err,
-				})
-			}
-		}
-		return
-	}
-
-	// build the HTTP request
-	url.Path = path.Join(url.Path, "/1/batch", dataset)
-
-	// sigh. dislike
-	userAgent := fmt.Sprintf("libhoney-go/%s", Version)
-	if b.userAgentAddition != "" {
-		userAgent = fmt.Sprintf("%s %s", userAgent, strings.TrimSpace(b.userAgentAddition))
-	}
-
-	// One retry allowed for connection timeouts.
-	var resp *http.Response
-	for try := 0; try < 2; try++ {
-		if try > 0 {
-			b.metrics.Increment("send_retries")
-		}
-
-		var req *http.Request
-		reqBody, zipped := buildReqReader(encEvs, !b.disableCompression)
-		if reader, ok := reqBody.(*pooledReader); ok {
-			// Pass the underlying bytes.Reader to http.Request so that
-			// GetBody and ContentLength fields are populated on Request.
-			// See https://cs.opensource.google/go/go/+/refs/tags/go1.17.5:src/net/http/request.go;l=898
-			req, err = http.NewRequest("POST", url.String(), &reader.Reader)
-		} else {
-			req, err = http.NewRequest("POST", url.String(), reqBody)
-		}
-		req.Header.Set("Content-Type", contentType)
-		if zipped {
-			req.Header.Set("Content-Encoding", "zstd")
-		}
-
-		req.Header.Set("User-Agent", userAgent)
-		//req.Header.Add("X-Opsramp-Team", writeKey)
-		// send off batch!
-		resp, err = b.httpClient.Do(req)
-		if reader, ok := reqBody.(*pooledReader); ok {
-			reader.Release()
-		}
-
-		if httpErr, ok := err.(httpError); ok && httpErr.Timeout() {
-			continue
-		}
-		break
-	}
-	end := time.Now().UTC()
-	if b.testNower != nil {
-		end = b.testNower.Now()
-	}
-	dur := end.Sub(start)
-
-	// if the entire HTTP POST failed, send a failed response for every event
-	if err != nil {
-		b.metrics.Increment("send_errors")
-		// Pass the top-level send error down responses channel for each event
-		// that didn't already error during encoding
-		b.enqueueErrResponses(err, events, dur/time.Duration(numEncoded))
-		// the POST failed so we're done with this batch key's worth of events
-		return
-	}
-
-	// ok, the POST succeeded, let's process each individual response
-	b.metrics.Increment("batches_sent")
-	b.metrics.Count("messages_sent", numEncoded)
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		b.metrics.Increment("send_errors")
-
-		var err error
-		var body []byte
-		if resp.Header.Get("Content-Type") == "application/msgpack" {
-			var errorBody interface{}
-			decoder := msgpack.NewDecoder(resp.Body)
-			err = decoder.Decode(&errorBody)
-			if err == nil {
-				body, err = json.Marshal(&errorBody)
-			}
-		} else {
-			body, err = ioutil.ReadAll(resp.Body)
-		}
-		if err != nil {
-			b.enqueueErrResponses(
-				fmt.Errorf("Got HTTP error code but couldn't read response body: %v", err),
-				events,
-				dur/time.Duration(numEncoded),
-			)
-			return
-		}
-		// log if write key was rejected because of invalid Write / API key
-		if resp.StatusCode == http.StatusUnauthorized {
-			b.logger.Printf("APIKey '%s' was rejected. Please verify APIKey is correct.", writeKey)
-		}
-		for _, ev := range events {
-			err := fmt.Errorf(
-				"got unexpected HTTP status %d: %s",
-				resp.StatusCode,
-				http.StatusText(resp.StatusCode),
-			)
-			if ev != nil {
-				b.enqueueResponse(Response{
-					StatusCode: resp.StatusCode,
-					Body:       body,
-					Duration:   dur / time.Duration(numEncoded),
-					Metadata:   ev.Metadata,
-					Err:        err,
-				})
-			}
-		}
-		return
-	}
-
-	// decode the responses
-	var batchResponses []Response
-	if resp.Header.Get("Content-Type") == "application/msgpack" {
-		err = msgpack.NewDecoder(resp.Body).Decode(&batchResponses)
-	} else {
-		err = json.NewDecoder(resp.Body).Decode(&batchResponses)
-	}
-	if err != nil {
-		// if we can't decode the responses, just error out all of them
-		b.metrics.Increment("response_decode_errors")
-		b.enqueueErrResponses(fmt.Errorf(
-			"got OK HTTP response, but couldn't read response body: %v", err),
-			events,
-			dur/time.Duration(numEncoded),
-		)
-		return
-	}
-
-	// Go through the responses and send them down the queue. If an Event
-	// triggered a JSON error, it wasn't sent to the server and won't have a
-	// returned response... so we have to be a bit more careful matching up
-	// responses with Events.
-	var eIdx int
-	for _, resp := range batchResponses {
-		resp.Duration = dur / time.Duration(numEncoded)
-		for eIdx < len(events) && events[eIdx] == nil {
-			fmt.Printf("incr, eIdx: %d, len(evs): %d\n", eIdx, len(events))
-			eIdx++
-		}
-		if eIdx == len(events) { // just in case
-			break
-		}
-		resp.Metadata = events[eIdx].Metadata
-		b.enqueueResponse(resp)
-		eIdx++
-	}
-}*/
-
 // create the JSON for this event list manually so that we can send
 // responses down the response queue for any that fail to marshal
 func (b *batchAgg) encodeBatchJSON(events []*Event) ([]byte, int) {
-
 
 	// track first vs. rest events for commas
 	first := true
@@ -1477,15 +873,6 @@ type pooledReader struct {
 	buf []byte
 }
 
-//func (r *pooledReader) Release() error {
-//	// Ensure further attempts to read will return io.EOF
-//	r.Reset(nil)
-//	// Then reset and give up ownership of the buffer.
-//	zstdBufferPool.Put(r.buf[:0])
-//	r.buf = nil
-//	return nil
-//}
-
 // Instantiating a new encoder is expensive, so use a global one.
 // EncodeAll() is concurrency-safe.
 var zstdEncoder *zstd.Encoder
@@ -1504,25 +891,6 @@ func init() {
 		panic(err)
 	}
 }
-
-// buildReqReader returns an io.Reader and a boolean, indicating whether or not
-// the underlying bytes.Reader is compressed.
-//func buildReqReader(jsonEncoded []byte, compress bool) (io.Reader, bool) {
-//	if compress {
-//		var buf []byte
-//		if found, ok := zstdBufferPool.Get().([]byte); ok {
-//			buf = found[:0]
-//		}
-//
-//		buf = zstdEncoder.EncodeAll(jsonEncoded, buf)
-//		reader := pooledReader{
-//			buf: buf,
-//		}
-//		reader.Reset(reader.buf)
-//		return &reader, true
-//	}
-//	return bytes.NewReader(jsonEncoded), false
-//}
 
 // nower to make testing easier
 type nower interface {

@@ -1145,3 +1145,92 @@ func TestEventStringReturnsMaskedApiKey(t *testing.T) {
 	//	testEquals(t, test.ev.String(), test.expStr)
 	//}
 }
+
+func TestConfigVariationsForClassicNonClassic(t *testing.T) {
+	tests := []struct {
+		apikey          string
+		dataset         string
+		expectedDataset string
+	}{
+		{
+			apikey:          "",
+			dataset:         "",
+			expectedDataset: "libhoney-go dataset",
+		},
+		{
+			apikey:          "c1a551c000d68f9ed1e96432ac1a3380",
+			dataset:         "",
+			expectedDataset: "libhoney-go dataset",
+		},
+		{
+			apikey:          "c1a551c000d68f9ed1e96432ac1a3380",
+			dataset:         " my-service ",
+			expectedDataset: " my-service ",
+		},
+		{
+			apikey:          "d68f9ed1e96432ac1a3380",
+			dataset:         "",
+			expectedDataset: "unknown_dataset",
+		},
+		{
+			apikey:          "d68f9ed1e96432ac1a3380",
+			dataset:         " my-service ",
+			expectedDataset: "my-service",
+		},
+	}
+
+	for _, tc := range tests {
+		config := Config{
+			APIKey:  tc.apikey,
+			Dataset: tc.dataset,
+		}
+		testEquals(t, config.getDataset(), tc.expectedDataset)
+	}
+}
+
+func TestVerifyAPIKey(t *testing.T) {
+	testCases := []struct {
+		Name                string
+		APIKey              string
+		expectedEnvironment string
+	}{
+		{Name: "classic", APIKey: "lcYrFflRUR6rHbIifwqhfGRUR6rHbIic", expectedEnvironment: ""},
+		{Name: "non-classic", APIKey: "lcYrFflRUR6rHbIifwqhfG", expectedEnvironment: "test_env"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.Name, func(t *testing.T) {
+			config := Config{
+				APIKey: tc.APIKey,
+			}
+
+			server := httptest.NewServer(
+				http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					assert.Equal(t, "/1/auth", r.URL.Path)
+					assert.Equal(t, []string{tc.APIKey}, r.Header["X-Honeycomb-Team"])
+
+					if config.isClassic() {
+						w.Write([]byte(`{"team":{"slug":"test_team"}}`))
+					} else {
+						w.Write([]byte(`{"team":{"slug":"test_team"},"environment":{"slug":"test_env"}}`))
+					}
+				}),
+			)
+			defer server.Close()
+			config.APIHost = server.URL
+
+			// There are 3 places we can verify and/or get the team and environment given
+			// an APIkey: VerifyWriteKey, VerifyAPIKey and GetTeamAndEnvironment
+			team, err := VerifyWriteKey(config)
+			assert.Equal(t, "test_team", team)
+			assert.Nil(t, err)
+
+			team, err = VerifyAPIKey(config)
+			assert.Equal(t, "test_team", team)
+			assert.Nil(t, err)
+
+			team, env, err := GetTeamAndEnvironment(config)
+			assert.Equal(t, tc.expectedEnvironment, env)
+		})
+	}
+}
