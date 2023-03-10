@@ -502,7 +502,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 	for i := 0; i < retryCount; i++ {
 		if token == "" {
 			b.logger.Printf("Skipping as authToken is empty")
-			break
+			continue
 		}
 		if i > 0 {
 			b.metrics.Increment("send_retries")
