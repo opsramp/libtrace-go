@@ -208,7 +208,10 @@ func opsrampOauthToken() string {
 	req.Header.Add("Accept", "application/json")
 	req.Header.Set("Connection", "close")
 
-	resp, _ := http.DefaultClient.Do(req)
+	resp, authError := http.DefaultClient.Do(req)
+	if authError != nil {
+		return ""
+	}
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(resp.Body)
@@ -475,6 +478,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 			} else {
 				token = ev.APIToken
 				agent = true
+				b.logger.Printf("Using Token from request header: ", token)
 			}
 			break
 		}
@@ -496,6 +500,10 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 
 	retryCount := 3
 	for i := 0; i < retryCount; i++ {
+		if token == "" {
+			b.logger.Printf("Skipping as authToken is empty")
+			break
+		}
 		if i > 0 {
 			b.metrics.Increment("send_retries")
 		}
@@ -643,6 +651,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 
 		// Contact the server and print out its response.
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		b.logger.Printf("trace-proxy token: ", token, "  tenant id: ", tenantId, " dataset: ", dataset)
 
 		//Add headers
 		ctx = metadata.NewOutgoingContext(ctx, metadata.New(map[string]string{
@@ -653,6 +662,8 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 
 		defer cancel()
 		r, err := c.ExportTraceProxy(ctx, &req)
+		md, _ := metadata.FromIncomingContext(ctx)
+		b.logger.Printf("ctx metadata is: ", md)
 		if err != nil || r.GetStatus() == "" {
 			b.logger.Printf("could not export traces from proxy in %v try: %v", i, err)
 			b.metrics.Increment("send_errors")
