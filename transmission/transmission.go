@@ -231,7 +231,7 @@ func (h *Opsramptraceproxy) createMuster() *muster.Client {
 }
 
 func (h *Opsramptraceproxy) Stop() error {
-	h.Logger.Printf("Opsramptraceproxy transmission stopping")
+	fmt.Println("Opsramptraceproxy transmission stopping")
 	err := h.muster.Stop()
 	if conn != nil {
 		conn.Close()
@@ -478,7 +478,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 			} else {
 				token = ev.APIToken
 				agent = true
-				b.logger.Printf("Using Token from request header: ", token)
+				fmt.Println("Using Token from request header: ", token)
 			}
 			break
 		}
@@ -501,7 +501,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 	retryCount := 3
 	for i := 0; i < retryCount; i++ {
 		if token == "" {
-			b.logger.Printf("Skipping as authToken is empty")
+			fmt.Println("Skipping as authToken is empty")
 			continue
 		}
 		if i > 0 {
@@ -651,7 +651,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 
 		// Contact the server and print out its response.
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		b.logger.Printf("trace-proxy token: ", token, "  tenant id: ", tenantId, " dataset: ", dataset)
+		fmt.Println("trace-proxy token: ", token, "  tenant id: ", tenantId, " dataset: ", dataset)
 
 		//Add headers
 		ctx = metadata.NewOutgoingContext(ctx, metadata.New(map[string]string{
@@ -663,9 +663,9 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 		defer cancel()
 		r, err := c.ExportTraceProxy(ctx, &req)
 		md, _ := metadata.FromIncomingContext(ctx)
-		b.logger.Printf("ctx metadata is: ", md)
+		fmt.Println("ctx metadata is: ", md)
 		if err != nil || r.GetStatus() == "" {
-			b.logger.Printf("could not export traces from proxy in %v try: %v", i, err)
+			fmt.Println("could not export traces from proxy in %v try: %v", i, err)
 			b.metrics.Increment("send_errors")
 			//b.metrics.Increment( "counterResponseErrors")
 			continue
@@ -674,9 +674,9 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 			//b.metrics.Increment("counterResponse20x")
 		}
 
-		b.logger.Printf("trace proxy response: %s", r.String())
-		b.logger.Printf("trace proxy response msg: %s", r.GetMessage())
-		b.logger.Printf("trace proxy response status: %s", r.GetStatus())
+		fmt.Println("trace proxy response: %s", r.String())
+		fmt.Println("trace proxy response msg: %s", r.GetMessage())
+		fmt.Println("trace proxy response status: %s", r.GetStatus())
 		break
 	}
 }
