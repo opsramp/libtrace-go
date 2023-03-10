@@ -156,7 +156,7 @@ func (h *Opsramptraceproxy) Start() error {
 	if h.Logger == nil {
 		h.Logger = &nullLogger{}
 	}
-	h.Logger.Printf("default transmission starting")
+	fmt.Println("default transmission starting")
 	h.responses = make(chan Response, h.PendingWorkCapacity*2)
 	if h.Metrics == nil {
 		h.Metrics = &nullMetrics{}
@@ -386,12 +386,14 @@ func (b *batchAgg) reenqueueEvents(events []*Event) {
 
 func (b *batchAgg) Fire(notifier muster.Notifier) {
 	defer notifier.Done()
+	fmt.Println("Entered into Fire")
 
 	// send each batchKey's collection of event as a POST to /1/batch/<dataset>
 	// we don't need the batch key anymore; it's done its sorting job
 	for _, events := range b.batches {
 		//b.fireBatch(events)
 		//b.exportBatch(events)
+		fmt.Println("calling exportProtoMsgBatch for events: ", events)
 		b.exportProtoMsgBatch(events)
 	}
 	// The initial batches could have had payloads that were greater than 5MB.
@@ -435,6 +437,7 @@ func (b *batchAgg) Fire(notifier muster.Notifier) {
 //}
 
 func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
+	fmt.Println("Entered into export protomsgBatch for event: ", events)
 	var agent bool
 	//start := time.Now().UTC()
 	//if b.testNower != nil {
@@ -474,6 +477,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 			tenantId = ev.APITenantId
 			if len(ev.APIToken) == 0 {
 				token = Opsramptoken
+				fmt.Println("generated independent token: ", token)
 				agent = false
 			} else {
 				token = ev.APIToken
@@ -500,6 +504,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 
 	retryCount := 3
 	for i := 0; i < retryCount; i++ {
+		fmt.Println("Starting to export: ", retryCount)
 		if token == "" {
 			fmt.Println("Skipping as authToken is empty")
 			continue
@@ -516,14 +521,14 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 			}
 
 			tlsCreds := credentials.NewTLS(tlsCfg)
-			b.logger.Printf("Connecting with Tls")
+			fmt.Println("Connecting with Tls")
 			opts = []grpc.DialOption{
 				grpc.WithTransportCredentials(tlsCreds),
 				grpc.WithUnaryInterceptor(grpcInterceptor),
 			}
 
 		} else {
-			b.logger.Printf("Connecting without Tls")
+			fmt.Println("Connecting without Tls")
 			//conn, err = grpc.Dial(apiHostUrl, grpc.WithTransportCredentials(insecure.NewCredentials()))
 			opts = []grpc.DialOption{
 				grpc.WithTransportCredentials(insecure.NewCredentials()),
@@ -541,7 +546,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 			conn, err = grpc.Dial(apiHostUrl, opts...)
 			mutex.Unlock()
 			if err != nil {
-				b.logger.Printf("Could not connect: %v", err)
+				fmt.Println("Could not connect: %v", err)
 				b.metrics.Increment("send_errors")
 				return
 			}
@@ -554,7 +559,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 		req.TenantId = tenantId
 
 		for _, ev := range events {
-			b.logger.Printf("event data: %+v", ev.Data)
+			fmt.Println("event data: %+v", ev.Data)
 
 			traceData := proxypb.ProxySpan{}
 			traceData.Data = &proxypb.Data{}
