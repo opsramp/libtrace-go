@@ -156,7 +156,7 @@ func (h *Opsramptraceproxy) Start() error {
 	if h.Logger == nil {
 		h.Logger = &nullLogger{}
 	}
-	fmt.Println("default transmission starting")
+	h.Logger.Printf("default transmission starting")
 	h.responses = make(chan Response, h.PendingWorkCapacity*2)
 	if h.Metrics == nil {
 		h.Metrics = &nullMetrics{}
@@ -192,44 +192,46 @@ func (h *Opsramptraceproxy) Start() error {
 	OpsrampSecret = h.OpsrampSecret
 	ApiEndPoint = h.ApiHost
 	mutex.Lock()
-	Opsramptoken = opsrampOauthToken()
+	var err error
+	Opsramptoken, err = opsrampOauthToken()
+	if err != nil {
+		h.Logger.Printf("Unable to get AccessToken")
+		return err
+	}
 	mutex.Unlock()
 	m := h.createMuster()
 	h.muster = m
 	return h.muster.Start()
 }
 
-var req *http.Request
-var respToken *http.Response
-var authError, respError, unMarshallError, reqError error
-var authToken, url string
-var tokenResponse OpsRampAuthTokenResponse
-
-func opsrampOauthToken() string {
-
-	url = fmt.Sprintf("%s/auth/oauth/token", strings.TrimRight(ApiEndPoint, "/"))
-	fmt.Println("in opsrampOauthToken urls was: ", url)
+func opsrampOauthToken() (string, error) {
+	url := fmt.Sprintf("%s/auth/oauth/token", strings.TrimRight(ApiEndPoint, "/"))
 	requestBody := strings.NewReader("client_id=" + OpsrampKey + "&client_secret=" + OpsrampSecret + "&grant_type=client_credentials")
-	req, reqError = http.NewRequest(http.MethodPost, url, requestBody)
-	fmt.Println(" in opsrampOauthToken reqError: ", reqError)
+	req, reqError := http.NewRequest(http.MethodPost, url, requestBody)
+	if reqError != nil {
+		return "", reqError
+	}
 	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Add("Accept", "application/json")
 	req.Header.Set("Connection", "close")
 
-	respToken, authError = http.DefaultClient.Do(req)
-	fmt.Println(" in opsrampOauthToken authError: ", authError)
-
+	http.DefaultClient.Timeout = 5 * time.Second
+	respToken, authError := http.DefaultClient.Do(req)
 	if authError != nil {
-		fmt.Println("Error for getting auth token: ", authError)
-		return ""
+		return "", authError
 	}
 	defer respToken.Body.Close()
 	var respBody []byte
-	respBody, respError = io.ReadAll(respToken.Body)
-	unMarshallError = json.Unmarshal(respBody, &tokenResponse)
-	fmt.Println(" in opsrampOauthToken token response: ", tokenResponse)
-	authToken = tokenResponse.AccessToken
-	return tokenResponse.AccessToken
+	var tokenResponse OpsRampAuthTokenResponse
+	respBody, respError := io.ReadAll(respToken.Body)
+	if respError != nil {
+		return "", respError
+	}
+	_ = json.Unmarshal(respBody, &tokenResponse)
+	if tokenResponse.AccessToken == "" {
+		return "", errors.New("Failed to get AccessToken check the configuration")
+	}
+	return tokenResponse.AccessToken, nil
 }
 
 func (h *Opsramptraceproxy) createMuster() *muster.Client {
@@ -243,7 +245,7 @@ func (h *Opsramptraceproxy) createMuster() *muster.Client {
 }
 
 func (h *Opsramptraceproxy) Stop() error {
-	fmt.Println("Opsramptraceproxy transmission stopping")
+	h.Logger.Printf("Opsramptraceproxy transmission stopping")
 	err := h.muster.Stop()
 	if conn != nil {
 		conn.Close()
@@ -398,14 +400,12 @@ func (b *batchAgg) reenqueueEvents(events []*Event) {
 
 func (b *batchAgg) Fire(notifier muster.Notifier) {
 	defer notifier.Done()
-	fmt.Println("Entered into Fire")
 
 	// send each batchKey's collection of event as a POST to /1/batch/<dataset>
 	// we don't need the batch key anymore; it's done its sorting job
 	for _, events := range b.batches {
 		//b.fireBatch(events)
 		//b.exportBatch(events)
-		fmt.Println("calling exportProtoMsgBatch for events: ", events)
 		b.exportProtoMsgBatch(events)
 	}
 	// The initial batches could have had payloads that were greater than 5MB.
@@ -449,7 +449,6 @@ func (b *batchAgg) Fire(notifier muster.Notifier) {
 //}
 
 func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
-	fmt.Println("Entered into export protomsgBatch for event: ", events)
 	var agent bool
 	//start := time.Now().UTC()
 	//if b.testNower != nil {
@@ -489,12 +488,12 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 			tenantId = ev.APITenantId
 			if len(ev.APIToken) == 0 {
 				token = Opsramptoken
-				fmt.Println("generated independent token: ", token)
+				b.logger.Printf("generated independent token: ", token)
 				agent = false
 			} else {
 				token = ev.APIToken
 				agent = true
-				fmt.Println("Using Token from request header: ", token)
+				b.logger.Printf("Using Token from request header: ", token)
 			}
 			break
 		}
@@ -516,9 +515,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 
 	retryCount := 3
 	for i := 0; i < retryCount; i++ {
-		fmt.Println("Starting to export: ", i)
 		if token == "" {
-			fmt.Println("Skipping as authToken is empty: ", authError, " token was: ", authToken, " Opsramp Token was: ", Opsramptoken, " RespError: ", respError, " Unamrshalling Error: ", unMarshallError, " tokenResponse.AccessToken: ", tokenResponse.AccessToken, " tokenResponse.TokenType: ", tokenResponse.TokenType, " tokenResponse.ExpiresIn: ", tokenResponse.ExpiresIn, " tokenResponse.Scope: ", tokenResponse.Scope, "url: ", url)
 			continue
 		}
 		if i > 0 {
@@ -533,14 +530,14 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 			}
 
 			tlsCreds := credentials.NewTLS(tlsCfg)
-			fmt.Println("Connecting with Tls")
+			b.logger.Printf("Connecting with Tls")
 			opts = []grpc.DialOption{
 				grpc.WithTransportCredentials(tlsCreds),
 				grpc.WithUnaryInterceptor(grpcInterceptor),
 			}
 
 		} else {
-			fmt.Println("Connecting without Tls")
+			b.logger.Printf("Connecting without Tls")
 			//conn, err = grpc.Dial(apiHostUrl, grpc.WithTransportCredentials(insecure.NewCredentials()))
 			opts = []grpc.DialOption{
 				grpc.WithTransportCredentials(insecure.NewCredentials()),
@@ -558,7 +555,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 			conn, err = grpc.Dial(apiHostUrl, opts...)
 			mutex.Unlock()
 			if err != nil {
-				fmt.Println("Could not connect: %v", err)
+				b.logger.Printf("Could not connect: %v", err)
 				b.metrics.Increment("send_errors")
 				return
 			}
@@ -571,7 +568,6 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 		req.TenantId = tenantId
 
 		for _, ev := range events {
-			fmt.Println("event data: %+v", ev.Data)
 
 			traceData := proxypb.ProxySpan{}
 			traceData.Data = &proxypb.Data{}
@@ -668,7 +664,6 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 
 		// Contact the server and print out its response.
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		fmt.Println("trace-proxy token: ", token, "  tenant id: ", tenantId, " dataset: ", dataset)
 
 		//Add headers
 		ctx = metadata.NewOutgoingContext(ctx, metadata.New(map[string]string{
@@ -679,10 +674,8 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 
 		defer cancel()
 		r, err := c.ExportTraceProxy(ctx, &req)
-		md, _ := metadata.FromIncomingContext(ctx)
-		fmt.Println("ctx metadata is: ", md)
 		if err != nil || r.GetStatus() == "" {
-			fmt.Println("could not export traces from proxy in %v try: %v", i, err)
+			b.logger.Printf("could not export traces from proxy in %v try: %v", i, err)
 			b.metrics.Increment("send_errors")
 			//b.metrics.Increment( "counterResponseErrors")
 			continue
@@ -691,9 +684,9 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 			//b.metrics.Increment("counterResponse20x")
 		}
 
-		fmt.Println("trace proxy response: %s", r.String())
-		fmt.Println("trace proxy response msg: %s", r.GetMessage())
-		fmt.Println("trace proxy response status: %s", r.GetStatus())
+		b.logger.Printf("trace proxy response: %s", r.String())
+		b.logger.Printf("trace proxy response msg: %s", r.GetMessage())
+		b.logger.Printf("trace proxy response status: %s", r.GetStatus())
 		break
 	}
 }
@@ -712,7 +705,10 @@ var grpcInterceptor = func(ctx context.Context,
 	if status.Code(err) == codes.Unauthenticated {
 		// renew oauth token here before retry
 		mutex.Lock()
-		Opsramptoken = opsrampOauthToken()
+		Opsramptoken, err = opsrampOauthToken()
+		if err != nil {
+			return err
+		}
 		mutex.Unlock()
 	}
 	return err
