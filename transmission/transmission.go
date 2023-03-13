@@ -215,7 +215,7 @@ func opsrampOauthToken() (string, error) {
 	req.Header.Add("Accept", "application/json")
 	req.Header.Set("Connection", "close")
 
-	http.DefaultClient.Timeout = 5 * time.Second
+	http.DefaultClient.Timeout = 240 * time.Second
 	respToken, authError := http.DefaultClient.Do(req)
 	if authError != nil {
 		return "", authError
