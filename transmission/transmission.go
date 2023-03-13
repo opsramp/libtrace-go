@@ -199,6 +199,9 @@ func (h *Opsramptraceproxy) Start() error {
 	return h.muster.Start()
 }
 
+var respToken *http.Response
+var authError error
+
 func opsrampOauthToken() string {
 
 	url := fmt.Sprintf("%s/auth/oauth/token", strings.TrimRight(ApiEndPoint, "/"))
@@ -208,13 +211,14 @@ func opsrampOauthToken() string {
 	req.Header.Add("Accept", "application/json")
 	req.Header.Set("Connection", "close")
 
-	resp, authError := http.DefaultClient.Do(req)
+	respToken, authError = http.DefaultClient.Do(req)
 	if authError != nil {
+		fmt.Println("Error for getting auth token: ", authError)
 		return ""
 	}
-	defer resp.Body.Close()
+	defer respToken.Body.Close()
 
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, _ := io.ReadAll(respToken.Body)
 	var tokenResponse OpsRampAuthTokenResponse
 	_ = json.Unmarshal(respBody, &tokenResponse)
 	return tokenResponse.AccessToken
@@ -506,7 +510,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 	for i := 0; i < retryCount; i++ {
 		fmt.Println("Starting to export: ", retryCount)
 		if token == "" {
-			fmt.Println("Skipping as authToken is empty")
+			fmt.Println("Skipping as authToken is empty", authError)
 			continue
 		}
 		if i > 0 {
