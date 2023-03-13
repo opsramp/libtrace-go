@@ -488,12 +488,11 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 			tenantId = ev.APITenantId
 			if len(ev.APIToken) == 0 {
 				token = Opsramptoken
-				b.logger.Printf("generated independent token: ", token)
 				agent = false
 			} else {
 				token = ev.APIToken
 				agent = true
-				b.logger.Printf("Using Token from request header: ", token)
+				b.logger.Printf("Using Token from request header")
 			}
 			break
 		}
@@ -516,6 +515,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 	retryCount := 3
 	for i := 0; i < retryCount; i++ {
 		if token == "" {
+			b.logger.Printf("Skipping as AccessToken is empty")
 			continue
 		}
 		if i > 0 {
