@@ -512,7 +512,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 	for i := 0; i < retryCount; i++ {
 		fmt.Println("Starting to export: ", i)
 		if token == "" {
-			fmt.Println("Skipping as authToken is empty: ", authError, " token was: ", authToken, " Opsramp Token was: ", Opsramptoken, " RespError: ", respError, " Unamrshalling Error: ", unMarshallError, " tokenResponse: ", tokenResponse)
+			fmt.Println("Skipping as authToken is empty: ", authError, " token was: ", authToken, " Opsramp Token was: ", Opsramptoken, " RespError: ", respError, " Unamrshalling Error: ", unMarshallError, " tokenResponse.AccessToken: ", tokenResponse.AccessToken, " tokenResponse.TokenType: ", tokenResponse.TokenType, " tokenResponse.ExpiresIn: ", tokenResponse.ExpiresIn, " tokenResponse.Scope: ", tokenResponse.Scope)
 			continue
 		}
 		if i > 0 {
