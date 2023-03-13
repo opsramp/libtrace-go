@@ -202,6 +202,7 @@ func (h *Opsramptraceproxy) Start() error {
 var respToken *http.Response
 var authError, respError, unMarshallError error
 var authToken string
+var tokenResponse OpsRampAuthTokenResponse
 
 func opsrampOauthToken() string {
 
@@ -220,7 +221,6 @@ func opsrampOauthToken() string {
 	defer respToken.Body.Close()
 	var respBody []byte
 	respBody, respError = io.ReadAll(respToken.Body)
-	var tokenResponse OpsRampAuthTokenResponse
 	unMarshallError = json.Unmarshal(respBody, &tokenResponse)
 	authToken = tokenResponse.AccessToken
 	return tokenResponse.AccessToken
@@ -512,7 +512,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 	for i := 0; i < retryCount; i++ {
 		fmt.Println("Starting to export: ", i)
 		if token == "" {
-			fmt.Println("Skipping as authToken is empty: ", authError, " token was: ", authToken, " Opsramp Token was: ", Opsramptoken, " RespError: ", respError, " Unamrshalling Error: ", unMarshallError)
+			fmt.Println("Skipping as authToken is empty: ", authError, " token was: ", authToken, " Opsramp Token was: ", Opsramptoken, " RespError: ", respError, " Unamrshalling Error: ", unMarshallError, " tokenResponse: ", tokenResponse)
 			continue
 		}
 		if i > 0 {
