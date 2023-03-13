@@ -226,7 +226,7 @@ func opsrampOauthToken() (string, error) {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Connection", "close")
-
+	fmt.Println("in opsrampOauthToken request err: ", err)
 	client := &http.Client{Timeout: 5 * time.Second}
 
 	resp, err := client.Do(req)
@@ -570,6 +570,8 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 			}
 		}
 
+		fmt.Println("token was: ", token)
+
 		c := proxypb.NewTraceProxyServiceClient(conn)
 
 		req := proxypb.ExportTraceProxyServiceRequest{}
@@ -694,9 +696,9 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 			//b.metrics.Increment("counterResponse20x")
 		}
 
-		b.logger.Printf("trace proxy response: %s", r.String())
-		b.logger.Printf("trace proxy response msg: %s", r.GetMessage())
-		b.logger.Printf("trace proxy response status: %s", r.GetStatus())
+		fmt.Println("trace proxy response: %s", r.String())
+		fmt.Println("trace proxy response msg: %s", r.GetMessage())
+		fmt.Println("trace proxy response status: %s", r.GetStatus())
 		break
 	}
 }
