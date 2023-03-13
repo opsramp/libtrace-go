@@ -199,21 +199,26 @@ func (h *Opsramptraceproxy) Start() error {
 	return h.muster.Start()
 }
 
+var req *http.Request
 var respToken *http.Response
-var authError, respError, unMarshallError error
+var authError, respError, unMarshallError, reqError error
 var authToken, url string
 var tokenResponse OpsRampAuthTokenResponse
 
 func opsrampOauthToken() string {
 
 	url = fmt.Sprintf("%s/auth/oauth/token", strings.TrimRight(ApiEndPoint, "/"))
+	fmt.Println("in opsrampOauthToken urls was: ", url)
 	requestBody := strings.NewReader("client_id=" + OpsrampKey + "&client_secret=" + OpsrampSecret + "&grant_type=client_credentials")
-	req, _ := http.NewRequest(http.MethodPost, url, requestBody)
+	req, reqError = http.NewRequest(http.MethodPost, url, requestBody)
+	fmt.Println(" in opsrampOauthToken reqError: ", reqError)
 	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Add("Accept", "application/json")
 	req.Header.Set("Connection", "close")
 
 	respToken, authError = http.DefaultClient.Do(req)
+	fmt.Println(" in opsrampOauthToken authError: ", authError)
+
 	if authError != nil {
 		fmt.Println("Error for getting auth token: ", authError)
 		return ""
