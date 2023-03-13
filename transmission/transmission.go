@@ -201,12 +201,12 @@ func (h *Opsramptraceproxy) Start() error {
 
 var respToken *http.Response
 var authError, respError, unMarshallError error
-var authToken string
+var authToken, url string
 var tokenResponse OpsRampAuthTokenResponse
 
 func opsrampOauthToken() string {
 
-	url := fmt.Sprintf("%s/auth/oauth/token", strings.TrimRight(ApiEndPoint, "/"))
+	url = fmt.Sprintf("%s/auth/oauth/token", strings.TrimRight(ApiEndPoint, "/"))
 	requestBody := strings.NewReader("client_id=" + OpsrampKey + "&client_secret=" + OpsrampSecret + "&grant_type=client_credentials")
 	req, _ := http.NewRequest(http.MethodPost, url, requestBody)
 	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
@@ -512,7 +512,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 	for i := 0; i < retryCount; i++ {
 		fmt.Println("Starting to export: ", i)
 		if token == "" {
-			fmt.Println("Skipping as authToken is empty: ", authError, " token was: ", authToken, " Opsramp Token was: ", Opsramptoken, " RespError: ", respError, " Unamrshalling Error: ", unMarshallError, " tokenResponse.AccessToken: ", tokenResponse.AccessToken, " tokenResponse.TokenType: ", tokenResponse.TokenType, " tokenResponse.ExpiresIn: ", tokenResponse.ExpiresIn, " tokenResponse.Scope: ", tokenResponse.Scope)
+			fmt.Println("Skipping as authToken is empty: ", authError, " token was: ", authToken, " Opsramp Token was: ", Opsramptoken, " RespError: ", respError, " Unamrshalling Error: ", unMarshallError, " tokenResponse.AccessToken: ", tokenResponse.AccessToken, " tokenResponse.TokenType: ", tokenResponse.TokenType, " tokenResponse.ExpiresIn: ", tokenResponse.ExpiresIn, " tokenResponse.Scope: ", tokenResponse.Scope, "url: ", url)
 			continue
 		}
 		if i > 0 {
