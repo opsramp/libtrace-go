@@ -192,29 +192,46 @@ func (h *Opsramptraceproxy) Start() error {
 	OpsrampSecret = h.OpsrampSecret
 	ApiEndPoint = h.ApiHost
 	mutex.Lock()
-	Opsramptoken = opsrampOauthToken()
+	var err error
+	Opsramptoken, err = opsrampOauthToken()
+	if err != nil {
+		h.Logger.Printf("Unable to get AccessToken")
+		return err
+	}
 	mutex.Unlock()
 	m := h.createMuster()
 	h.muster = m
 	return h.muster.Start()
 }
 
-func opsrampOauthToken() string {
-
+func opsrampOauthToken() (string, error) {
 	url := fmt.Sprintf("%s/auth/oauth/token", strings.TrimRight(ApiEndPoint, "/"))
 	requestBody := strings.NewReader("client_id=" + OpsrampKey + "&client_secret=" + OpsrampSecret + "&grant_type=client_credentials")
-	req, _ := http.NewRequest(http.MethodPost, url, requestBody)
+	req, reqError := http.NewRequest(http.MethodPost, url, requestBody)
+	if reqError != nil {
+		return "", reqError
+	}
 	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Add("Accept", "application/json")
 	req.Header.Set("Connection", "close")
 
-	resp, _ := http.DefaultClient.Do(req)
-	defer resp.Body.Close()
-
-	respBody, _ := io.ReadAll(resp.Body)
+	http.DefaultClient.Timeout = 240 * time.Second
+	respToken, authError := http.DefaultClient.Do(req)
+	if authError != nil {
+		return "", authError
+	}
+	defer respToken.Body.Close()
+	var respBody []byte
 	var tokenResponse OpsRampAuthTokenResponse
+	respBody, respError := io.ReadAll(respToken.Body)
+	if respError != nil {
+		return "", respError
+	}
 	_ = json.Unmarshal(respBody, &tokenResponse)
-	return tokenResponse.AccessToken
+	if tokenResponse.AccessToken == "" {
+		return "", errors.New("Failed to get AccessToken check the configuration")
+	}
+	return tokenResponse.AccessToken, nil
 }
 
 func (h *Opsramptraceproxy) createMuster() *muster.Client {
@@ -475,6 +492,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 			} else {
 				token = ev.APIToken
 				agent = true
+				b.logger.Printf("Using Token from request header")
 			}
 			break
 		}
@@ -496,6 +514,10 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 
 	retryCount := 3
 	for i := 0; i < retryCount; i++ {
+		if token == "" {
+			b.logger.Printf("Skipping as AccessToken is empty")
+			continue
+		}
 		if i > 0 {
 			b.metrics.Increment("send_retries")
 		}
@@ -546,7 +568,6 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 		req.TenantId = tenantId
 
 		for _, ev := range events {
-			b.logger.Printf("event data: %+v", ev.Data)
 
 			traceData := proxypb.ProxySpan{}
 			traceData.Data = &proxypb.Data{}
@@ -684,7 +705,10 @@ var grpcInterceptor = func(ctx context.Context,
 	if status.Code(err) == codes.Unauthenticated {
 		// renew oauth token here before retry
 		mutex.Lock()
-		Opsramptoken = opsrampOauthToken()
+		Opsramptoken, err = opsrampOauthToken()
+		if err != nil {
+			return err
+		}
 		mutex.Unlock()
 	}
 	return err
