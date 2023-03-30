@@ -81,7 +81,7 @@ func NewClient(conf ClientConfig) (*Client, error) {
 	c.ensureLogger()
 
 	if conf.Transmission == nil {
-		c.transmission = &transmission.Opsramptraceproxy{
+		c.transmission = &transmission.TraceProxy{
 			MaxBatchSize:         DefaultMaxBatchSize,
 			BatchTimeout:         DefaultBatchTimeout,
 			MaxConcurrentBatches: DefaultMaxConcurrentBatches,

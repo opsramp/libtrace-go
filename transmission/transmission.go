@@ -66,12 +66,12 @@ func fmtUserAgent(addition string) string {
 	}
 }
 
-var Opsramptoken, OpsrampKey, OpsrampSecret, ApiEndPoint string
+var activeToken, authKey, authSecret, apiEndpoint, authEndpoint string
 var mutex sync.Mutex
 var conn *grpc.ClientConn
 var opts []grpc.DialOption
 
-type Opsramptraceproxy struct {
+type TraceProxy struct {
 	// How many events to collect into a batch before sending. A
 	// batch could be sent before achieving this item limit if the
 	// BatchTimeout has elapsed since the last batch send. If set
@@ -140,9 +140,12 @@ type Opsramptraceproxy struct {
 	UseTls         bool
 	UseTlsInsecure bool
 
-	OpsrampKey    string
-	OpsrampSecret string
-	ApiHost       string
+	ApiHost string
+
+	TenantId          string
+	AuthTokenEndpoint string
+	AuthTokenKey      string
+	AuthTokenSecret   string
 }
 
 type OpsRampAuthTokenResponse struct {
@@ -152,7 +155,7 @@ type OpsRampAuthTokenResponse struct {
 	Scope       string `json:"scope"`
 }
 
-func (h *Opsramptraceproxy) Start() error {
+func (h *TraceProxy) Start() error {
 	if h.Logger == nil {
 		h.Logger = &nullLogger{}
 	}
@@ -181,19 +184,18 @@ func (h *Opsramptraceproxy) Start() error {
 				logger:                h.Logger,
 				useTls:                h.UseTls,
 				useTlsInsecure:        h.UseTlsInsecure,
-				OpsrampKey:            h.OpsrampKey,
-				OpsrampSecret:         h.OpsrampSecret,
-				ApiHost:               h.ApiHost,
+				tenantId:              h.TenantId,
 			}
 		}
 	}
 
-	OpsrampKey = h.OpsrampKey
-	OpsrampSecret = h.OpsrampSecret
-	ApiEndPoint = h.ApiHost
+	authKey = h.AuthTokenKey
+	authSecret = h.AuthTokenSecret
+	authEndpoint = h.AuthTokenEndpoint
+	apiEndpoint = h.ApiHost
 	mutex.Lock()
 	var err error
-	Opsramptoken, err = opsrampOauthToken()
+	activeToken, err = opsrampOauthToken()
 	if err != nil {
 		h.Logger.Printf("Unable to get AccessToken")
 		return err
@@ -205,8 +207,8 @@ func (h *Opsramptraceproxy) Start() error {
 }
 
 func opsrampOauthToken() (string, error) {
-	url := fmt.Sprintf("%s/auth/oauth/token", strings.TrimRight(ApiEndPoint, "/"))
-	requestBody := strings.NewReader("client_id=" + OpsrampKey + "&client_secret=" + OpsrampSecret + "&grant_type=client_credentials")
+	url := fmt.Sprintf("%s/auth/oauth/token", strings.TrimRight(apiEndpoint, "/"))
+	requestBody := strings.NewReader("client_id=" + authKey + "&client_secret=" + authSecret + "&grant_type=client_credentials")
 	req, reqError := http.NewRequest(http.MethodPost, url, requestBody)
 	if reqError != nil {
 		return "", reqError
@@ -234,7 +236,7 @@ func opsrampOauthToken() (string, error) {
 	return tokenResponse.AccessToken, nil
 }
 
-func (h *Opsramptraceproxy) createMuster() *muster.Client {
+func (h *TraceProxy) createMuster() *muster.Client {
 	m := new(muster.Client)
 	m.MaxBatchSize = h.MaxBatchSize
 	m.BatchTimeout = h.BatchTimeout
@@ -244,8 +246,8 @@ func (h *Opsramptraceproxy) createMuster() *muster.Client {
 	return m
 }
 
-func (h *Opsramptraceproxy) Stop() error {
-	h.Logger.Printf("Opsramptraceproxy transmission stopping")
+func (h *TraceProxy) Stop() error {
+	h.Logger.Printf("TraceProxy transmission stopping")
 	err := h.muster.Stop()
 	if conn != nil {
 		conn.Close()
@@ -254,7 +256,7 @@ func (h *Opsramptraceproxy) Stop() error {
 	return err
 }
 
-func (h *Opsramptraceproxy) Flush() (err error) {
+func (h *TraceProxy) Flush() (err error) {
 	// There isn't a way to flush a muster.Client directly, so we have to stop
 	// the old one (which has a side-effect of flushing the data) and make a new
 	// one. We start the new one and swap it with the old one so that we minimize
@@ -275,7 +277,7 @@ func (h *Opsramptraceproxy) Flush() (err error) {
 // it completes. Similarly, if BlockOnSend is set and the pending work is more
 // than the PendingWorkCapacity, this will block a Flush until more pending
 // work can be enqueued.
-func (h *Opsramptraceproxy) Add(ev *Event) {
+func (h *TraceProxy) Add(ev *Event) {
 
 	if h.tryAdd(ev) {
 		h.Metrics.Increment("messages_queued")
@@ -293,7 +295,7 @@ func (h *Opsramptraceproxy) Add(ev *Event) {
 
 // tryAdd attempts to add ev to the underlying muster. It returns false if this
 // was unsucessful because the muster queue (muster.Work) is full.
-func (h *Opsramptraceproxy) tryAdd(ev *Event) bool {
+func (h *TraceProxy) tryAdd(ev *Event) bool {
 	h.musterLock.RLock()
 	defer h.musterLock.RUnlock()
 
@@ -316,11 +318,11 @@ func (h *Opsramptraceproxy) tryAdd(ev *Event) bool {
 	}
 }
 
-func (h *Opsramptraceproxy) TxResponses() chan Response {
+func (h *TraceProxy) TxResponses() chan Response {
 	return h.responses
 }
 
-func (h *Opsramptraceproxy) SendResponse(r Response) bool {
+func (h *TraceProxy) SendResponse(r Response) bool {
 	if h.BlockOnResponse {
 		h.responses <- r
 	} else {
@@ -359,9 +361,8 @@ type batchAgg struct {
 
 	useTls         bool
 	useTlsInsecure bool
-	OpsrampKey     string
-	OpsrampSecret  string
-	ApiHost        string
+
+	tenantId string
 }
 
 // batch is a collection of events that will all be POSTed as one HTTP call
@@ -487,7 +488,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 			dataset = ev.Dataset
 			tenantId = ev.APITenantId
 			if len(ev.APIToken) == 0 {
-				token = Opsramptoken
+				token = activeToken
 				agent = false
 			} else {
 				token = ev.APIToken
@@ -498,6 +499,9 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 		}
 	}
 
+	if tenantId == "" {
+		tenantId = b.tenantId
+	}
 	if tenantId == "" {
 		b.logger.Printf("Skipping as TenantId is empty")
 		return
@@ -544,9 +548,9 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 				grpc.WithUnaryInterceptor(grpcInterceptor),
 			}
 		}
-		if token != Opsramptoken && !agent {
+		if token != activeToken && !agent {
 			mutex.Lock()
-			token = Opsramptoken
+			token = activeToken
 			mutex.Unlock()
 		}
 
@@ -699,13 +703,13 @@ var grpcInterceptor = func(ctx context.Context,
 	invoker grpc.UnaryInvoker,
 	opts ...grpc.CallOption,
 ) error {
-	tokenChecker := fmt.Sprintf("Bearer %s", Opsramptoken)
+	tokenChecker := fmt.Sprintf("Bearer %s", activeToken)
 	ctx = metadata.AppendToOutgoingContext(ctx, "Authorization", tokenChecker)
 	err := invoker(ctx, method, req, reply, cc, opts...)
 	if status.Code(err) == codes.Unauthenticated {
 		// renew oauth token here before retry
 		mutex.Lock()
-		Opsramptoken, err = opsrampOauthToken()
+		activeToken, err = opsrampOauthToken()
 		if err != nil {
 			return err
 		}

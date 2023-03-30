@@ -226,7 +226,7 @@ func (c *Config) isClassic() bool {
 			responses:       make(chan transmission.Response, 2*conf.PendingWorkCapacity),
 		}
 	default:
-		t = &transmission.Opsramptraceproxy{
+		t = &transmission.TraceProxy{
 			MaxBatchSize:         conf.MaxBatchSize,
 			BatchTimeout:         conf.SendFrequency,
 			MaxConcurrentBatches: conf.MaxConcurrentBatches,
@@ -365,7 +365,7 @@ func getAuth(config Config) (authInfo, error) {
 	}
 	body, _ := ioutil.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		return auth, fmt.Errorf(`Abnormal non-200 response verifying Opsramptraceproxy write/API key: %d
+		return auth, fmt.Errorf(`Abnormal non-200 response verifying TraceProxy write/API key: %d
 Response body: %s`, resp.StatusCode, string(body))
 	}
 	if err := json.Unmarshal(body, &auth); err != nil {
@@ -856,18 +856,18 @@ func (e *Event) SendPresampled() (err error) {
 	// possible to send events without an API key etc
 
 	senderType := reflect.TypeOf(e.client.transmission).String()
-	isOpsrampSender := strings.HasSuffix(senderType, "transmission.Opsramptraceproxy")
+	isOpsrampSender := strings.HasSuffix(senderType, "transmission.TraceProxy")
 	isMockSender := strings.HasSuffix(senderType, "transmission.MockSender")
 	if isOpsrampSender || isMockSender {
 		if e.APIHost == "" {
-			return errors.New("No APIHost for Opsramptraceproxy. Can't send to the Great Unknown.")
+			return errors.New("No APIHost for TraceProxy. Can't send to the Great Unknown.")
 		}
 		//if e.WriteKey == "" {
 		//	return errors.New("No WriteKey specified. Can't send event.")
 		//}
 	}
 	if e.Dataset == "" {
-		return errors.New("No Dataset for Opsramptraceproxy. Can't send datasetless.")
+		return errors.New("No Dataset for TraceProxy. Can't send datasetless.")
 	}
 
 	// Mark the event as sent, no more field changes will be applied.
