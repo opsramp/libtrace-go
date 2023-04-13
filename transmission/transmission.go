@@ -22,8 +22,8 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
-	"io"
 	"net/http"
+	"net/url"
 	"runtime"
 	"strings"
 	"sync"
@@ -35,7 +35,6 @@ import (
 	"github.com/opsramp/libtrace-go/version"
 	"github.com/vmihailenco/msgpack/v5"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/connectivity"
 )
 
 const (
@@ -44,12 +43,12 @@ const (
 	// Size limit for a single serialized event within a batch.
 	apiEventSizeMax    int = 100000 // 100KB
 	maxOverflowBatches int = 10
-	// Default start-to-finish timeout for batch send HTTP requests.
+	// Default start-to-finish timeout for batch to send HTTP requests.
 	defaultSendTimeout = time.Second * 60
 )
 
 var (
-	// Libhoney's portion of the User-Agent header, e.g. "libhoney/1.2.3"
+	// LibTrace's portion of the User-Agent header, e.g. "libhoney/1.2.3"
 	baseUserAgent = fmt.Sprintf("libtrace-go/%s", version.Version)
 	// Information about the runtime environment for inclusion in User-Agent
 	runtimeInfo = fmt.Sprintf("%s (%s/%s)", strings.Replace(runtime.Version(), "go", "go/", 1), runtime.GOOS, runtime.GOARCH)
@@ -66,15 +65,10 @@ func fmtUserAgent(addition string) string {
 	}
 }
 
-var activeToken, authKey, authSecret, apiEndpoint, authEndpoint string
-var mutex sync.Mutex
-var conn *grpc.ClientConn
-var opts []grpc.DialOption
-
 type TraceProxy struct {
 	// How many events to collect into a batch before sending. A
 	// batch could be sent before achieving this item limit if the
-	// BatchTimeout has elapsed since the last batch send. If set
+	// BatchTimeout has elapsed since the last batch is sent. If set
 	// to zero, batches will only be sent upon reaching the
 	// BatchTimeout. It is an error for both this and
 	// the BatchTimeout to be zero.
@@ -97,7 +91,7 @@ type TraceProxy struct {
 	// Default: 60 seconds.
 	BatchSendTimeout time.Duration
 
-	// how many batches can be inflight simultaneously
+	// number of batches that can be inflight simultaneously
 	MaxConcurrentBatches uint
 
 	// how many events to allow to pile up
@@ -143,23 +137,67 @@ type TraceProxy struct {
 	ApiHost string
 
 	TenantId          string
+	Dataset           string
 	AuthTokenEndpoint string
 	AuthTokenKey      string
 	AuthTokenSecret   string
-}
+	RetrySettings     *RetrySettings
 
-type OpsRampAuthTokenResponse struct {
-	AccessToken string `json:"access_token"`
-	TokenType   string `json:"token_type"`
-	ExpiresIn   int64  `json:"expires_in"`
-	Scope       string `json:"scope"`
+	defaultAuth *Auth
+	client      proxypb.TraceProxyServiceClient
 }
 
 func (h *TraceProxy) Start() error {
 	if h.Logger == nil {
 		h.Logger = &nullLogger{}
 	}
-	h.Logger.Printf("default transmission starting")
+	if h.TenantId == "" {
+		return fmt.Errorf("tenantId cant be empty")
+	}
+
+	// populate auth token
+	if h.defaultAuth == nil {
+		auth, err := CreateNewAuth(
+			h.AuthTokenEndpoint,
+			h.AuthTokenKey,
+			h.AuthTokenSecret,
+			time.Minute*4,
+			h.Transport,
+			h.RetrySettings,
+		)
+		if err != nil {
+			return err
+		}
+		h.defaultAuth = auth
+		h.defaultAuth.Renew()
+	}
+
+	// establish initial connection
+	var opts []grpc.DialOption
+	if h.UseTls {
+		tlsCfg := &tls.Config{InsecureSkipVerify: h.UseTlsInsecure}
+		opts = append(opts, grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)))
+	} else {
+		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	}
+
+	opts = append(opts, grpc.WithUnaryInterceptor(h.defaultAuth.UnaryClientInterceptor))
+
+	apiHostURL, err := url.Parse(h.ApiHost)
+	if err != nil {
+		return err
+	}
+	apiPort := apiHostURL.Port()
+	if apiPort == "" {
+		apiPort = "443"
+	}
+	apiHost := fmt.Sprintf("%s:%s", apiHostURL.Hostname(), apiPort)
+	conn, err := grpc.Dial(apiHost, opts...)
+	if err != nil {
+		return err
+	}
+	h.client = proxypb.NewTraceProxyServiceClient(conn)
+
 	h.responses = make(chan Response, h.PendingWorkCapacity*2)
 	if h.Metrics == nil {
 		h.Metrics = &nullMetrics{}
@@ -170,70 +208,23 @@ func (h *TraceProxy) Start() error {
 	if h.batchMaker == nil {
 		h.batchMaker = func() muster.Batch {
 			return &batchAgg{
-				userAgentAddition: h.UserAgentAddition,
-				batches:           map[string][]*Event{},
-				httpClient: &http.Client{
-					Transport: h.Transport,
-					Timeout:   h.BatchSendTimeout,
-				},
+				userAgentAddition:     h.UserAgentAddition,
+				batches:               map[string][]*Event{},
+				client:                h.client,
 				blockOnResponse:       h.BlockOnResponse,
 				responses:             h.responses,
 				metrics:               h.Metrics,
 				disableCompression:    h.DisableGzipCompression || h.DisableCompression,
 				enableMsgpackEncoding: h.EnableMsgpackEncoding,
 				logger:                h.Logger,
-				useTls:                h.UseTls,
-				useTlsInsecure:        h.UseTlsInsecure,
 				tenantId:              h.TenantId,
 			}
 		}
 	}
 
-	authKey = h.AuthTokenKey
-	authSecret = h.AuthTokenSecret
-	authEndpoint = h.AuthTokenEndpoint
-	apiEndpoint = h.ApiHost
-	mutex.Lock()
-	var err error
-	activeToken, err = opsrampOauthToken()
-	if err != nil {
-		h.Logger.Printf("Unable to get AccessToken")
-		return err
-	}
-	mutex.Unlock()
 	m := h.createMuster()
 	h.muster = m
 	return h.muster.Start()
-}
-
-func opsrampOauthToken() (string, error) {
-	url := fmt.Sprintf("%s/auth/oauth/token", strings.TrimRight(apiEndpoint, "/"))
-	requestBody := strings.NewReader("client_id=" + authKey + "&client_secret=" + authSecret + "&grant_type=client_credentials")
-	req, reqError := http.NewRequest(http.MethodPost, url, requestBody)
-	if reqError != nil {
-		return "", reqError
-	}
-	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Add("Accept", "application/json")
-	req.Header.Set("Connection", "close")
-
-	http.DefaultClient.Timeout = 240 * time.Second
-	respToken, authError := http.DefaultClient.Do(req)
-	if authError != nil {
-		return "", authError
-	}
-	defer respToken.Body.Close()
-	var respBody []byte
-	var tokenResponse OpsRampAuthTokenResponse
-	respBody, respError := io.ReadAll(respToken.Body)
-	if respError != nil {
-		return "", respError
-	}
-	_ = json.Unmarshal(respBody, &tokenResponse)
-	if tokenResponse.AccessToken == "" {
-		return "", errors.New("Failed to get AccessToken check the configuration")
-	}
-	return tokenResponse.AccessToken, nil
 }
 
 func (h *TraceProxy) createMuster() *muster.Client {
@@ -249,16 +240,13 @@ func (h *TraceProxy) createMuster() *muster.Client {
 func (h *TraceProxy) Stop() error {
 	h.Logger.Printf("TraceProxy transmission stopping")
 	err := h.muster.Stop()
-	if conn != nil {
-		conn.Close()
-	}
 	close(h.responses)
 	return err
 }
 
 func (h *TraceProxy) Flush() (err error) {
 	// There isn't a way to flush a muster.Client directly, so we have to stop
-	// the old one (which has a side-effect of flushing the data) and make a new
+	// the old one (which has a side effect of flushing the data) and make a new
 	// one. We start the new one and swap it with the old one so that we minimize
 	// the time we hold the musterLock for.
 	newMuster := h.createMuster()
@@ -342,7 +330,6 @@ type batchAgg struct {
 	batches map[string][]*Event
 	// Used to reenque events when an initial batch is too large
 	overflowBatches       map[string][]*Event
-	httpClient            *http.Client
 	blockOnResponse       bool
 	userAgentAddition     string
 	disableCompression    bool
@@ -353,7 +340,7 @@ type batchAgg struct {
 
 	metrics Metrics
 
-	// allows manipulating value of "now" for testing
+	// allows manipulating the value of "now" for testing
 	testNower   nower
 	testBlocker *sync.WaitGroup
 
@@ -363,6 +350,9 @@ type batchAgg struct {
 	useTlsInsecure bool
 
 	tenantId string
+	dataset  string
+
+	client proxypb.TraceProxyServiceClient
 }
 
 // batch is a collection of events that will all be POSTed as one HTTP call
@@ -370,13 +360,12 @@ type batchAgg struct {
 
 func (b *batchAgg) Add(ev interface{}) {
 	// from muster godoc: "The Batch does not need to be safe for concurrent
-	// access; synchronization will be handled by the Client."
+	// access; the Client will handle synchronization."
 	if b.batches == nil {
 		b.batches = map[string][]*Event{}
 	}
 	e := ev.(*Event)
-	// collect separate buckets of events to send based on the trio of api/wk/ds
-	// if all three of those match it's safe to send all the events in one batch
+	// collect separate buckets of events to send based on apiHost and dataset
 	key := fmt.Sprintf("%s_%s", e.APIHost, e.Dataset)
 	b.batches[key] = append(b.batches[key], e)
 }
@@ -402,7 +391,7 @@ func (b *batchAgg) reenqueueEvents(events []*Event) {
 func (b *batchAgg) Fire(notifier muster.Notifier) {
 	defer notifier.Done()
 
-	// send each batchKey's collection of event as a POST to /1/batch/<dataset>
+	// send each batchKey's collection of events as a POST to /1/batch/<dataset>
 	// we don't need the batch key anymore; it's done its sorting job
 	for _, events := range b.batches {
 		//b.fireBatch(events)
@@ -434,7 +423,7 @@ func (b *batchAgg) Fire(notifier muster.Notifier) {
 
 			for _, k := range keys {
 				events := b.overflowBatches[k]
-				// fireBatch may append more overflow events
+				// fireBatch may append more overflow events,
 				// so we want to clear this key before firing the batch
 				delete(b.overflowBatches, k)
 				//b.fireBatch(events)
@@ -445,332 +434,133 @@ func (b *batchAgg) Fire(notifier muster.Notifier) {
 	}
 }
 
-//type httpError interface {
-//	Timeout() bool
-//}
-
 func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
-	var agent bool
-	//start := time.Now().UTC()
-	//if b.testNower != nil {
-	//	start = b.testNower.Now()
-
-	//}
-	//b.metrics.Register("counterResponseErrors","counter")
-	//b.metrics.Register("counterResponse20x","counter")
 	if len(events) == 0 {
-		// we managed to create a batch key with no events. odd. move on.
+		// we managed to create a batch with no events. 🤔️ that's odd, let's move on.
 		return
 	}
-
-	var numEncoded int
-	//var contentType string
-	//contentType = "application/grpc"
-	_, numEncoded = b.encodeBatchProtoBuf(events)
-
-	// if we failed to encode any events skip this batch
+	_, numEncoded := b.encodeBatchProtoBuf(events)
 	if numEncoded == 0 {
 		return
 	}
-	//b.metrics.Register(d.Name+counterEnqueueErrors, "counter")
-	//d.Metrics.Register(d.Name+counterResponse20x, "counter")
-	//d.Metrics.Register(d.Name+counterResponseErrors, "counter")
 
-	// get some attributes common to this entire batch up front off the first
-	// valid event (some may be nil)
-	var apiHost, tenantId, token, dataset string
+	req := proxypb.ExportTraceProxyServiceRequest{
+		TenantId: b.tenantId,
+	}
 
-	//var apiHost, writeKey, dataset string
 	for _, ev := range events {
-		if ev != nil {
-			apiHost = ev.APIHost
-			//writeKey = ev.APIKey
-			dataset = ev.Dataset
-			tenantId = ev.APITenantId
-			if len(ev.APIToken) == 0 {
-				token = activeToken
-				agent = false
-			} else {
-				token = ev.APIToken
-				agent = true
-				b.logger.Printf("Using Token from request header")
-			}
-			break
+		traceData := proxypb.ProxySpan{
+			Data:      &proxypb.Data{},
+			Timestamp: ev.Timestamp.Format(time.RFC3339Nano),
 		}
+
+		traceData.Data.TraceTraceID, _ = ev.Data["traceTraceID"].(string)
+		traceData.Data.TraceParentID, _ = ev.Data["traceParentID"].(string)
+		traceData.Data.TraceSpanID, _ = ev.Data["traceSpanID"].(string)
+		traceData.Data.TraceLinkTraceID, _ = ev.Data["traceLinkTraceID"].(string)
+		traceData.Data.TraceLinkSpanID, _ = ev.Data["traceLinkSpanID"].(string)
+		traceData.Data.Type, _ = ev.Data["type"].(string)
+		traceData.Data.MetaType, _ = ev.Data["metaType"].(string)
+		traceData.Data.SpanName, _ = ev.Data["spanName"].(string)
+		traceData.Data.SpanKind, _ = ev.Data["spanKind"].(string)
+		traceData.Data.SpanNumEvents, _ = ev.Data["spanNumEvents"].(int64)
+		traceData.Data.SpanNumLinks, _ = ev.Data["spanNumLinks"].(int64)
+		traceData.Data.StatusCode, _ = ev.Data["statusCode"].(int64)
+		traceData.Data.StatusMessage, _ = ev.Data["statusMessage"].(string)
+		traceData.Data.Time, _ = ev.Data["time"].(int64)
+		traceData.Data.DurationMs, _ = ev.Data["durationMs"].(float64)
+		traceData.Data.StartTime, _ = ev.Data["startTime"].(int64)
+		traceData.Data.EndTime, _ = ev.Data["endTime"].(int64)
+		traceData.Data.Error, _ = ev.Data["error"].(bool)
+		traceData.Data.FromProxy, _ = ev.Data["fromProxy"].(bool)
+		traceData.Data.ParentName, _ = ev.Data["parentName"].(string)
+
+		resourceAttr, _ := ev.Data["resourceAttributes"].(map[string]interface{})
+		for key, val := range resourceAttr {
+			resourceAttrKeyVal := proxypb.KeyValue{}
+			resourceAttrKeyVal.Key = key
+
+			switch v := val.(type) {
+			case nil:
+				b.logger.Printf("x is nil") // here v has type interface{}
+			case string:
+				resourceAttrKeyVal.Value = &proxypb.AnyValue{Value: &proxypb.AnyValue_StringValue{StringValue: v}} // here v has type int
+			case bool:
+				resourceAttrKeyVal.Value = &proxypb.AnyValue{Value: &proxypb.AnyValue_BoolValue{BoolValue: v}} // here v has type interface{}
+			case int64:
+				resourceAttrKeyVal.Value = &proxypb.AnyValue{Value: &proxypb.AnyValue_IntValue{IntValue: v}} // here v has type interface{}
+			default:
+				b.logger.Printf("type unknown: ", v) // here v has type interface{}
+			}
+
+			traceData.Data.ResourceAttributes = append(traceData.Data.ResourceAttributes, &resourceAttrKeyVal)
+		}
+		spanAttr, _ := ev.Data["spanAttributes"].(map[string]interface{})
+		for key, val := range spanAttr {
+			spanAttrKeyVal := proxypb.KeyValue{}
+			spanAttrKeyVal.Key = key
+			//spanAttrKeyVal.Value = val.(*proxypb.AnyValue)
+
+			switch v := val.(type) {
+			case nil:
+				b.logger.Printf("x is nil") // here v has type interface{}
+			case string:
+				spanAttrKeyVal.Value = &proxypb.AnyValue{Value: &proxypb.AnyValue_StringValue{StringValue: v}} // here v has type int
+			case bool:
+				spanAttrKeyVal.Value = &proxypb.AnyValue{Value: &proxypb.AnyValue_BoolValue{BoolValue: v}} // here v has type interface{}
+			case int64:
+				spanAttrKeyVal.Value = &proxypb.AnyValue{Value: &proxypb.AnyValue_IntValue{IntValue: v}} // here v has type interface{}
+			default:
+				b.logger.Printf("type unknown: %v", v) // here v has type interface{}
+			}
+
+			traceData.Data.SpanAttributes = append(traceData.Data.SpanAttributes, &spanAttrKeyVal)
+		}
+
+		eventAttr, _ := ev.Data["eventAttributes"].(map[string]interface{})
+		for key, val := range eventAttr {
+			eventAttrKeyVal := proxypb.KeyValue{}
+			eventAttrKeyVal.Key = key
+			//spanAttrKeyVal.Value = val.(*proxypb.AnyValue)
+
+			switch v := val.(type) {
+			case nil:
+				b.logger.Printf("x is nil") // here v has type interface{}
+			case string:
+				eventAttrKeyVal.Value = &proxypb.AnyValue{Value: &proxypb.AnyValue_StringValue{StringValue: v}} // here v has type int
+			case bool:
+				eventAttrKeyVal.Value = &proxypb.AnyValue{Value: &proxypb.AnyValue_BoolValue{BoolValue: v}} // here v has type interface{}
+			case int64:
+				eventAttrKeyVal.Value = &proxypb.AnyValue{Value: &proxypb.AnyValue_IntValue{IntValue: v}} // here v has type interface{}
+			default:
+				b.logger.Printf("type unknown: %v", v) // here v has type interface{}
+			}
+
+			traceData.Data.EventAttributes = append(traceData.Data.EventAttributes, &eventAttrKeyVal)
+		}
+
+		req.Items = append(req.Items, &traceData)
 	}
 
-	if tenantId == "" {
-		tenantId = b.tenantId
-	}
-	if tenantId == "" {
-		b.logger.Printf("Skipping as TenantId is empty")
-		return
-	}
+	//Add headers
+	ctx := metadata.NewOutgoingContext(context.Background(), metadata.New(map[string]string{
+		"tenantId": b.tenantId,
+		"dataset":  b.dataset,
+	}))
 
-	apiHost = strings.Replace(apiHost, "https://", "", -1)
-	apiHost = strings.Replace(apiHost, "http://", "", -1)
-	var apiHostUrl string
-	if !strings.Contains(apiHost, ":") {
-		apiHostUrl = apiHost + ":443"
-	} else {
-		apiHostUrl = apiHost
-	}
-
-	retryCount := 3
-	for i := 0; i < retryCount; i++ {
-		if token == "" {
-			b.logger.Printf("Skipping as AccessToken is empty")
-			continue
-		}
-		if i > 0 {
-			b.metrics.Increment("send_retries")
-		}
-		var err error
-		if b.useTls {
-			bInsecureSkip := b.useTlsInsecure
-
-			tlsCfg := &tls.Config{
-				InsecureSkipVerify: !bInsecureSkip,
-			}
-
-			tlsCreds := credentials.NewTLS(tlsCfg)
-			b.logger.Printf("Connecting with Tls")
-			opts = []grpc.DialOption{
-				grpc.WithTransportCredentials(tlsCreds),
-				grpc.WithUnaryInterceptor(grpcInterceptor),
-			}
-
-		} else {
-			b.logger.Printf("Connecting without Tls")
-			//conn, err = grpc.Dial(apiHostUrl, grpc.WithTransportCredentials(insecure.NewCredentials()))
-			opts = []grpc.DialOption{
-				grpc.WithTransportCredentials(insecure.NewCredentials()),
-				grpc.WithUnaryInterceptor(grpcInterceptor),
-			}
-		}
-		if token != activeToken && !agent {
-			mutex.Lock()
-			token = activeToken
-			mutex.Unlock()
-		}
-
-		if conn == nil || conn.GetState() == connectivity.TransientFailure || conn.GetState() == connectivity.Shutdown || string(conn.GetState()) == "INVALID_STATE" {
-			mutex.Lock()
-			conn, err = grpc.Dial(apiHostUrl, opts...)
-			mutex.Unlock()
-			if err != nil {
-				b.logger.Printf("Could not connect: %v", err)
-				b.metrics.Increment("send_errors")
-				return
-			}
-		}
-
-		c := proxypb.NewTraceProxyServiceClient(conn)
-
-		req := proxypb.ExportTraceProxyServiceRequest{}
-
-		req.TenantId = tenantId
-
-		for _, ev := range events {
-
-			traceData := proxypb.ProxySpan{}
-			traceData.Data = &proxypb.Data{}
-
-			traceData.Data.TraceTraceID, _ = ev.Data["traceTraceID"].(string)
-			traceData.Data.TraceParentID, _ = ev.Data["traceParentID"].(string)
-			traceData.Data.TraceSpanID, _ = ev.Data["traceSpanID"].(string)
-			traceData.Data.TraceLinkTraceID, _ = ev.Data["traceLinkTraceID"].(string)
-			traceData.Data.TraceLinkSpanID, _ = ev.Data["traceLinkSpanID"].(string)
-			traceData.Data.Type, _ = ev.Data["type"].(string)
-			traceData.Data.MetaType, _ = ev.Data["metaType"].(string)
-			traceData.Data.SpanName, _ = ev.Data["spanName"].(string)
-			traceData.Data.SpanKind, _ = ev.Data["spanKind"].(string)
-			traceData.Data.SpanNumEvents, _ = ev.Data["spanNumEvents"].(int64)
-			traceData.Data.SpanNumLinks, _ = ev.Data["spanNumLinks"].(int64)
-			traceData.Data.StatusCode, _ = ev.Data["statusCode"].(int64)
-			traceData.Data.StatusMessage, _ = ev.Data["statusMessage"].(string)
-			traceData.Data.Time, _ = ev.Data["time"].(int64)
-			traceData.Data.DurationMs, _ = ev.Data["durationMs"].(float64)
-			traceData.Data.StartTime, _ = ev.Data["startTime"].(int64)
-			traceData.Data.EndTime, _ = ev.Data["endTime"].(int64)
-			traceData.Data.Error, _ = ev.Data["error"].(bool)
-			traceData.Data.FromProxy, _ = ev.Data["fromProxy"].(bool)
-			traceData.Data.ParentName, _ = ev.Data["parentName"].(string)
-			traceData.Timestamp = ev.Timestamp.Format(time.RFC3339Nano)
-
-			resourceAttr, _ := ev.Data["resourceAttributes"].(map[string]interface{})
-			for key, val := range resourceAttr {
-				resourceAttrKeyVal := proxypb.KeyValue{}
-				resourceAttrKeyVal.Key = key
-
-				switch v := val.(type) {
-				case nil:
-					b.logger.Printf("x is nil") // here v has type interface{}
-				case string:
-					resourceAttrKeyVal.Value = &proxypb.AnyValue{Value: &proxypb.AnyValue_StringValue{StringValue: val.(string)}} // here v has type int
-				case bool:
-					resourceAttrKeyVal.Value = &proxypb.AnyValue{Value: &proxypb.AnyValue_BoolValue{BoolValue: val.(bool)}} // here v has type interface{}
-				case int64:
-					resourceAttrKeyVal.Value = &proxypb.AnyValue{Value: &proxypb.AnyValue_IntValue{IntValue: val.(int64)}} // here v has type interface{}
-				default:
-					b.logger.Printf("type unknown: ", v) // here v has type interface{}
-				}
-
-				traceData.Data.ResourceAttributes = append(traceData.Data.ResourceAttributes, &resourceAttrKeyVal)
-			}
-			spanAttr, _ := ev.Data["spanAttributes"].(map[string]interface{})
-			for key, val := range spanAttr {
-				spanAttrKeyVal := proxypb.KeyValue{}
-				spanAttrKeyVal.Key = key
-				//spanAttrKeyVal.Value = val.(*proxypb.AnyValue)
-
-				switch v := val.(type) {
-				case nil:
-					b.logger.Printf("x is nil") // here v has type interface{}
-				case string:
-					spanAttrKeyVal.Value = &proxypb.AnyValue{Value: &proxypb.AnyValue_StringValue{StringValue: val.(string)}} // here v has type int
-				case bool:
-					spanAttrKeyVal.Value = &proxypb.AnyValue{Value: &proxypb.AnyValue_BoolValue{BoolValue: val.(bool)}} // here v has type interface{}
-				case int64:
-					spanAttrKeyVal.Value = &proxypb.AnyValue{Value: &proxypb.AnyValue_IntValue{IntValue: val.(int64)}} // here v has type interface{}
-				default:
-					b.logger.Printf("type unknown: %v", v) // here v has type interface{}
-				}
-
-				traceData.Data.SpanAttributes = append(traceData.Data.SpanAttributes, &spanAttrKeyVal)
-			}
-
-			eventAttr, _ := ev.Data["eventAttributes"].(map[string]interface{})
-			for key, val := range eventAttr {
-				eventAttrKeyVal := proxypb.KeyValue{}
-				eventAttrKeyVal.Key = key
-				//spanAttrKeyVal.Value = val.(*proxypb.AnyValue)
-
-				switch v := val.(type) {
-				case nil:
-					b.logger.Printf("x is nil") // here v has type interface{}
-				case string:
-					eventAttrKeyVal.Value = &proxypb.AnyValue{Value: &proxypb.AnyValue_StringValue{StringValue: val.(string)}} // here v has type int
-				case bool:
-					eventAttrKeyVal.Value = &proxypb.AnyValue{Value: &proxypb.AnyValue_BoolValue{BoolValue: val.(bool)}} // here v has type interface{}
-				case int64:
-					eventAttrKeyVal.Value = &proxypb.AnyValue{Value: &proxypb.AnyValue_IntValue{IntValue: val.(int64)}} // here v has type interface{}
-				default:
-					b.logger.Printf("type unknown: %v", v) // here v has type interface{}
-				}
-
-				traceData.Data.EventAttributes = append(traceData.Data.EventAttributes, &eventAttrKeyVal)
-			}
-
-			req.Items = append(req.Items, &traceData)
-
-		}
-
-		// Contact the server and print out its response.
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-
-		//Add headers
-		ctx = metadata.NewOutgoingContext(ctx, metadata.New(map[string]string{
-			"Authorization": token,
-			"tenantId":      tenantId,
-			"dataset":       dataset,
-		}))
-
-		defer cancel()
-		r, err := c.ExportTraceProxy(ctx, &req)
-		if err != nil || r.GetStatus() == "" {
-			b.logger.Printf("could not export traces from proxy in %v try: %v", i, err)
+	r, err := b.client.ExportTraceProxy(ctx, &req)
+	if st, ok := status.FromError(err); ok {
+		if st.Code() != codes.OK {
+			b.logger.Printf("sending failed. error: %s", st.String())
 			b.metrics.Increment("send_errors")
-			//b.metrics.Increment( "counterResponseErrors")
-			continue
 		} else {
 			b.metrics.Increment("batches_sent")
-			//b.metrics.Increment("counterResponse20x")
 		}
-
-		b.logger.Printf("trace proxy response: %s", r.String())
-		b.logger.Printf("trace proxy response msg: %s", r.GetMessage())
-		b.logger.Printf("trace proxy response status: %s", r.GetStatus())
-		break
 	}
-}
 
-var grpcInterceptor = func(ctx context.Context,
-	method string,
-	req interface{},
-	reply interface{},
-	cc *grpc.ClientConn,
-	invoker grpc.UnaryInvoker,
-	opts ...grpc.CallOption,
-) error {
-	tokenChecker := fmt.Sprintf("Bearer %s", activeToken)
-	ctx = metadata.AppendToOutgoingContext(ctx, "Authorization", tokenChecker)
-	err := invoker(ctx, method, req, reply, cc, opts...)
-	if status.Code(err) == codes.Unauthenticated {
-		// renew oauth token here before retry
-		mutex.Lock()
-		activeToken, err = opsrampOauthToken()
-		if err != nil {
-			return err
-		}
-		mutex.Unlock()
-	}
-	return err
-}
-
-// create the JSON for this event list manually so that we can send
-// responses down the response queue for any that fail to marshal
-func (b *batchAgg) encodeBatchJSON(events []*Event) ([]byte, int) {
-
-	// track first vs. rest events for commas
-	first := true
-	// track how many we successfully encode for later bookkeeping
-	var numEncoded int
-	buf := bytes.Buffer{}
-	buf.WriteByte('[')
-	bytesTotal := 1
-	// ok, we've got our array, let's populate it with JSON events
-	for i, ev := range events {
-		evByt, err := json.Marshal(ev)
-		// check all our errors first in case we need to skip batching this event
-		if err != nil {
-			b.enqueueResponse(Response{
-				Err:      err,
-				Metadata: ev.Metadata,
-			})
-			// nil out the invalid Event so we can line up sent Events with server
-			// responses if needed. don't delete to preserve slice length.
-			events[i] = nil
-			continue
-		}
-		// if the event is too large to ever send, add an error to the queue
-		if len(evByt) > apiEventSizeMax {
-			b.enqueueResponse(Response{
-				Err:      fmt.Errorf("event exceeds max event size of %d bytes, API will not accept this event", apiEventSizeMax),
-				Metadata: ev.Metadata,
-			})
-			events[i] = nil
-			continue
-		}
-
-		bytesTotal += len(evByt)
-		// count for the trailing ]
-		if bytesTotal+1 > apiMaxBatchSize {
-			b.reenqueueEvents(events[i:])
-			break
-		}
-
-		// ok, we have valid JSON and it'll fit in this batch; add ourselves a comma and the next value
-		if !first {
-			buf.WriteByte(',')
-			bytesTotal++
-		}
-		first = false
-		buf.Write(evByt)
-		numEncoded++
-	}
-	buf.WriteByte(']')
-	return buf.Bytes(), numEncoded
+	b.logger.Printf("trace proxy response: %s", r.String())
+	b.logger.Printf("trace proxy response msg: %s", r.GetMessage())
+	b.logger.Printf("trace proxy response status: %s", r.GetStatus())
 }
 
 // create the JSON for this event list manually so that we can send
@@ -793,7 +583,7 @@ func (b *batchAgg) encodeBatchProtoBuf(events []*Event) ([]byte, int) {
 				Err:      err,
 				Metadata: ev.Metadata,
 			})
-			// nil out the invalid Event so we can line up sent Events with server
+			// nil out the invalid Event, so we can line up sent Events with server
 			// responses if needed. don't delete to preserve slice length.
 			events[i] = nil
 			continue
@@ -815,7 +605,7 @@ func (b *batchAgg) encodeBatchProtoBuf(events []*Event) ([]byte, int) {
 			break
 		}
 
-		// ok, we have valid JSON and it'll fit in this batch; add ourselves a comma and the next value
+		// ok, we have valid JSON, and it'll fit in this batch; add ourselves a comma and the next value
 		if !first {
 			buf.WriteByte(',')
 			bytesTotal++
@@ -833,13 +623,13 @@ func (b *batchAgg) encodeBatchMsgp(events []*Event) ([]byte, int) {
 	// don't know in advance how many we'll encode, because the msgpack lib
 	// doesn't do size estimation. Also, the array header is of variable size
 	// based on array length, so we'll need to do some []byte shenanigans at
-	// at the end of this to properly prepend the header.
+	// the end of this to properly prepend the header.
 
 	var arrayHeader [5]byte
 	var numEncoded int
 	var buf bytes.Buffer
 
-	// Prepend space for largest possible msgpack array header.
+	// Prepend space for the largest possible msgpack array header.
 	buf.Write(arrayHeader[:])
 	for i, ev := range events {
 		evByt, err := msgpack.Marshal(ev)
@@ -848,7 +638,7 @@ func (b *batchAgg) encodeBatchMsgp(events []*Event) ([]byte, int) {
 				Err:      err,
 				Metadata: ev.Metadata,
 			})
-			// nil out the invalid Event so we can line up sent Events with server
+			// nil out the invalid Event, so we can line up sent Events with server
 			// responses if needed. don't delete to preserve slice length.
 			events[i] = nil
 			continue
@@ -912,7 +702,7 @@ func init() {
 		// Compression level 2 gives a good balance of speed and compression.
 		zstd.WithEncoderLevel(zstd.EncoderLevelFromZstd(2)),
 		// zstd allocates 2 * GOMAXPROCS * window size, so use a small window.
-		// Most Opsramp messages are smaller than this.
+		// most Opsramp messages are smaller than this.
 		zstd.WithWindowSize(1<<16),
 	)
 	if err != nil {
