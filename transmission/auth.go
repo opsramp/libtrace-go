@@ -175,6 +175,7 @@ func (oauth *Auth) UnaryClientInterceptor(c context.Context,
 	if code == codes.OK {
 		return err
 	}
+
 	st := status.Convert(err)
 	retryInfo := getRetryInfo(st)
 	if !shouldRetry(code, retryInfo) {
@@ -230,6 +231,7 @@ func shouldRetry(code codes.Code, retryInfo *errdetails.RetryInfo) bool {
 		codes.Aborted,
 		codes.OutOfRange,
 		codes.Unavailable,
+		codes.Unauthenticated,
 		codes.DataLoss:
 		// These are retryable errors.
 		return true
