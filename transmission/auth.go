@@ -97,7 +97,9 @@ func (oauth *Auth) Start() error {
 		for {
 			select {
 			case <-t.C:
-				oauth.Renew()
+				if !DefaultAvailability.Status() {
+					oauth.Renew()
+				}
 			case <-oauth.stopLiveliness:
 				t.Stop()
 				return
