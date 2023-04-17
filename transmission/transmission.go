@@ -164,11 +164,13 @@ func (h *TraceProxy) Start() error {
 			time.Minute*4,
 			h.Transport,
 			h.RetrySettings,
+			time.Minute*5,
 		)
 		if err != nil {
 			return err
 		}
 		h.defaultAuth = auth
+		h.defaultAuth.Start()
 		h.defaultAuth.Renew()
 	}
 
@@ -240,7 +242,13 @@ func (h *TraceProxy) createMuster() *muster.Client {
 func (h *TraceProxy) Stop() error {
 	h.Logger.Printf("TraceProxy transmission stopping")
 	err := h.muster.Stop()
-	close(h.responses)
+	if h.responses != nil {
+		close(h.responses)
+	}
+	if h.defaultAuth != nil {
+		h.defaultAuth.Stop()
+	}
+
 	return err
 }
 

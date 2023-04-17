@@ -30,6 +30,10 @@ type Auth struct {
 	Timeout       time.Duration
 	RetrySettings *RetrySettings
 
+	liveliness              bool
+	livelinessCheckInterval time.Duration
+	stopLiveliness          chan struct{}
+
 	renewInProgress bool
 	mut             sync.RWMutex
 	lastRenewedTime time.Time
@@ -43,7 +47,7 @@ type AuthTokenResponse struct {
 	Scope       string `json:"scope"`
 }
 
-func CreateNewAuth(endpoint, key, secret string, timeout time.Duration, transport http.RoundTripper, retrySettings *RetrySettings) (*Auth, error) {
+func CreateNewAuth(endpoint, key, secret string, timeout time.Duration, transport http.RoundTripper, retrySettings *RetrySettings, livelinessInterval time.Duration) (*Auth, error) {
 	if endpoint == "" || key == "" || secret == "" {
 		return nil, fmt.Errorf("invalid credentials")
 	}
@@ -67,16 +71,46 @@ func CreateNewAuth(endpoint, key, secret string, timeout time.Duration, transpor
 	}
 
 	return &Auth{
-		Endpoint:        endpoint,
-		Key:             key,
-		Secret:          secret,
-		Transport:       transport,
-		Timeout:         timeout,
-		RetrySettings:   retrySettings,
-		mut:             sync.RWMutex{},
-		lastRenewedTime: time.Time{},
-		authToken:       AuthTokenResponse{},
+		Endpoint:                endpoint,
+		Key:                     key,
+		Secret:                  secret,
+		Transport:               transport,
+		Timeout:                 timeout,
+		RetrySettings:           retrySettings,
+		liveliness:              false,
+		livelinessCheckInterval: livelinessInterval,
+		stopLiveliness:          make(chan struct{}),
+		renewInProgress:         false,
+		mut:                     sync.RWMutex{},
+		lastRenewedTime:         time.Time{},
+		authToken:               AuthTokenResponse{},
 	}, nil
+}
+
+func (oauth *Auth) Start() error {
+	if oauth.liveliness {
+		return fmt.Errorf("already started, dont reuse Auth object, prefer reinitalization")
+	}
+
+	go func() {
+		t := time.NewTicker(oauth.livelinessCheckInterval)
+		for {
+			select {
+			case <-t.C:
+				oauth.Renew()
+			case <-oauth.stopLiveliness:
+				t.Stop()
+				return
+			}
+		}
+	}()
+	return nil
+}
+
+func (oauth *Auth) Stop() {
+	if oauth.liveliness {
+		oauth.stopLiveliness <- struct{}{}
+	}
 }
 
 // GetToken returns the stored authToken
