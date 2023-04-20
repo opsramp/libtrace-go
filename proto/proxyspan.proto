@@ -12,8 +12,17 @@ service TraceProxyService {
       body: "*",
     };
   }
+
+  rpc Status(StatusRequest) returns(StatusResponse) {
+
+  }
 }
 
+message StatusRequest {}
+
+message StatusResponse {
+  bool peerActive = 1;
+}
 
 message ExportTraceProxyServiceRequest {
   repeated ProxySpan items = 1;
