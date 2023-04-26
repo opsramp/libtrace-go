@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
@@ -31,10 +32,9 @@ import (
 
 	"github.com/facebookgo/muster"
 	"github.com/klauspost/compress/zstd"
-	proxypb "github.com/opsramp/libtrace-go/proto/proxypb"
+	"github.com/opsramp/libtrace-go/proto/proxypb"
 	"github.com/opsramp/libtrace-go/version"
 	"github.com/vmihailenco/msgpack/v5"
-	"google.golang.org/grpc"
 )
 
 const (
@@ -134,6 +134,8 @@ type TraceProxy struct {
 	UseTls         bool
 	UseTlsInsecure bool
 
+	IsPeer bool
+
 	ApiHost string
 
 	TenantId          string
@@ -220,6 +222,8 @@ func (h *TraceProxy) Start() error {
 				enableMsgpackEncoding: h.EnableMsgpackEncoding,
 				logger:                h.Logger,
 				tenantId:              h.TenantId,
+				dataset:               h.Dataset,
+				isPeer:                h.IsPeer,
 			}
 		}
 	}
@@ -359,6 +363,7 @@ type batchAgg struct {
 
 	tenantId string
 	dataset  string
+	isPeer   bool
 
 	client proxypb.TraceProxyServiceClient
 }
@@ -456,7 +461,13 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 		TenantId: b.tenantId,
 	}
 
+	var apiHost string
+
 	for _, ev := range events {
+		if apiHost == "" {
+			apiHost = ev.APIHost
+		}
+
 		traceData := proxypb.ProxySpan{
 			Data:      &proxypb.Data{},
 			Timestamp: ev.Timestamp.Format(time.RFC3339Nano),
@@ -555,6 +566,32 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 		"tenantId": b.tenantId,
 		"dataset":  b.dataset,
 	}))
+
+	if b.isPeer && apiHost != "" {
+		var sendDirect bool
+		opts := []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+		}
+
+		apiHostURL, err := url.Parse(apiHost)
+		if err != nil {
+			sendDirect = true
+			b.logger.Printf("sending directly, unable to parse peer url: %v", err)
+		}
+		apiPort := apiHostURL.Port()
+		if apiPort == "" {
+			apiPort = "80"
+		}
+		apiHost := fmt.Sprintf("%s:%s", apiHostURL.Hostname(), apiPort)
+		conn, err := grpc.Dial(apiHost, opts...)
+		if err != nil {
+			sendDirect = true
+			b.logger.Printf("sending directly, unable to establish connection to %s error: %v", apiHost, err)
+		}
+		if !sendDirect {
+			b.client = proxypb.NewTraceProxyServiceClient(conn)
+		}
+	}
 
 	r, err := b.client.ExportTraceProxy(ctx, &req)
 	if st, ok := status.FromError(err); ok {
