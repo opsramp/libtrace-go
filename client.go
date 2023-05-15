@@ -195,6 +195,48 @@ func (c *Client) AddField(name string, val interface{}) {
 	c.builder.AddField(name, val)
 }
 
+func (c *Client) CheckField(key string) bool {
+	c.ensureTransmission()
+	c.ensureBuilder()
+	return c.builder.CheckField(key)
+}
+
+func (c *Client) AddResourceField(name string, val interface{}) {
+	c.ensureTransmission()
+	c.ensureBuilder()
+	c.builder.AddResourceField(name, val)
+}
+
+func (c *Client) CheckResourceField(key string) bool {
+	c.ensureTransmission()
+	c.ensureBuilder()
+	return c.builder.CheckResourceField(key)
+}
+
+func (c *Client) AddSpanField(name string, val interface{}) {
+	c.ensureTransmission()
+	c.ensureBuilder()
+	c.builder.AddSpanField(name, val)
+}
+
+func (c *Client) CheckSpanField(key string) bool {
+	c.ensureTransmission()
+	c.ensureBuilder()
+	return c.builder.CheckSpanField(key)
+}
+
+func (c *Client) AddEventField(name string, val interface{}) {
+	c.ensureTransmission()
+	c.ensureBuilder()
+	c.builder.AddEventField(name, val)
+}
+
+func (c *Client) CheckEventField(key string) bool {
+	c.ensureTransmission()
+	c.ensureBuilder()
+	return c.builder.CheckEventField(key)
+}
+
 // Add adds its data to the Client's scope. It adds all fields in a struct or
 // all keys in a map as individual Fields. These metrics will be inherited by
 // all builders and events.
