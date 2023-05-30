@@ -31,6 +31,9 @@ const (
 	defaultAPIHost        = "https://api.Opsramp.io/"
 	defaultClassicDataset = "libhoney-go dataset"
 	defaultDataset        = "unknown_dataset"
+	resourceAttributesKey = "resourceAttributes"
+	spanAttributesKey     = "spanAttributes"
+	eventAttributesKey    = "eventAttributes"
 
 	// DefaultMaxBatchSize how many events to collect in a batch
 	DefaultMaxBatchSize = 50
@@ -622,6 +625,97 @@ func (f *fieldHolder) AddField(key string, val interface{}) {
 	f.lock.Lock()
 	defer f.lock.Unlock()
 	f.data[key] = val
+}
+
+func (f *fieldHolder) CheckField(key string) bool {
+	f.lock.RLock()
+	defer f.lock.RUnlock()
+	_, ok := f.data[key]
+	return ok
+}
+
+// AddResourceField adds an individual resource field to the event or builder on which it is
+// called. Note that if you add a value that cannot be serialized to JSON (eg a
+// function or channel), the event will fail to send.
+func (f *fieldHolder) AddResourceField(key string, val interface{}) {
+	f.lock.Lock()
+	defer f.lock.Unlock()
+	resAttr, ok := f.data[resourceAttributesKey].(map[string]interface{})
+	if !ok {
+		resAttr = map[string]interface{}{}
+	}
+
+	resAttr[key] = val
+	f.data[resourceAttributesKey] = resAttr
+}
+
+func (f *fieldHolder) CheckResourceField(key string) bool {
+	f.lock.RLock()
+	defer f.lock.RUnlock()
+
+	resAttr, ok := f.data[resourceAttributesKey].(map[string]interface{})
+	if !ok {
+		return ok
+	}
+
+	_, ok = resAttr[key]
+	return ok
+}
+
+// AddSpanField adds an individual span field to the event or builder on which it is
+// called. Note that if you add a value that cannot be serialized to JSON (eg a
+// function or channel), the event will fail to send.
+func (f *fieldHolder) AddSpanField(key string, val interface{}) {
+	f.lock.Lock()
+	defer f.lock.Unlock()
+	spanAttr, ok := f.data[spanAttributesKey].(map[string]interface{})
+	if !ok {
+		spanAttr = map[string]interface{}{}
+	}
+
+	spanAttr[key] = val
+	f.data[spanAttributesKey] = spanAttr
+}
+
+func (f *fieldHolder) CheckSpanField(key string) bool {
+	f.lock.RLock()
+	defer f.lock.RUnlock()
+
+	spanAttr, ok := f.data[spanAttributesKey].(map[string]interface{})
+	if !ok {
+		return ok
+	}
+
+	_, ok = spanAttr[key]
+	return ok
+}
+
+// AddEventField adds an individual span field to the event or builder on which it is
+// called. Note that if you add a value that cannot be serialized to JSON (eg a
+// function or channel), the event will fail to send.
+func (f *fieldHolder) AddEventField(key string, val interface{}) {
+	f.lock.Lock()
+	defer f.lock.Unlock()
+	eventAttr, ok := f.data[eventAttributesKey].(map[string]interface{})
+	if !ok {
+		eventAttr = map[string]interface{}{}
+	}
+
+	eventAttr[key] = val
+	f.data[eventAttributesKey] = eventAttr
+}
+
+func (f *fieldHolder) CheckEventField(key string) bool {
+	f.lock.RLock()
+	defer f.lock.RUnlock()
+
+	eventAttr, ok := f.data[eventAttributesKey].(map[string]interface{})
+	if !ok {
+		return ok
+	}
+
+	_, ok = eventAttr[key]
+	return ok
 }
 
 // Add adds a complex data type to the event or builder on which it's called.
