@@ -476,7 +476,6 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 		traceData.Data.TraceTraceID, _ = ev.Data["traceTraceID"].(string)
 		traceData.Data.TraceParentID, _ = ev.Data["traceParentID"].(string)
 		traceData.Data.TraceSpanID, _ = ev.Data["traceSpanID"].(string)
-		fmt.Println("opsramp traceData.Data.TraceSpanID: ", traceData.Data.TraceSpanID)
 		traceData.Data.TraceLinkTraceID, _ = ev.Data["traceLinkTraceID"].(string)
 		traceData.Data.TraceLinkSpanID, _ = ev.Data["traceLinkSpanID"].(string)
 		traceData.Data.Type, _ = ev.Data["type"].(string)
