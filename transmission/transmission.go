@@ -196,7 +196,6 @@ func (h *TraceProxy) Start() error {
 		apiPort = "443"
 	}
 	apiHost := fmt.Sprintf("%s:%s", apiHostURL.Hostname(), apiPort)
-	apiHost = "172.24.132.176:8086"
 	conn, err := grpc.Dial(apiHost, opts...)
 	if err != nil {
 		return err
