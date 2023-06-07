@@ -9,7 +9,8 @@ type Metrics interface {
 }
 
 type nullMetrics struct{}
-//func (nm *nullMetrics) Register(string, string) {}
+
+// func (nm *nullMetrics) Register(string, string) {}
 func (nm *nullMetrics) Gauge(string, interface{}) {}
 func (nm *nullMetrics) Increment(string)          {}
 func (nm *nullMetrics) Count(string, interface{}) {}
