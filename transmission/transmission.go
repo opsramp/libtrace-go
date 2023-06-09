@@ -37,7 +37,9 @@ import (
 	"github.com/vmihailenco/msgpack/v5"
 )
 
-const UnknownService = "unknown_service"
+const unknownService = "unknown_service"
+
+var possibleServiceNames = []string{"service_name", "service.name"}
 
 const (
 	// Size limit for a serialized request body sent for a batch.
@@ -497,9 +499,18 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 		traceData.Data.ParentName, _ = ev.Data["parentName"].(string)
 
 		resourceAttr, _ := ev.Data["resourceAttributes"].(map[string]interface{})
-		if _, ok := resourceAttr["service_name"]; !ok {
-			resourceAttr["service_name"] = UnknownService
+
+		isUnknownService := true
+		for _, key := range possibleServiceNames {
+			if _, ok := resourceAttr[key]; ok {
+				isUnknownService = false
+				break
+			}
 		}
+		if isUnknownService {
+			resourceAttr[possibleServiceNames[0]] = unknownService
+		}
+
 		for key, val := range resourceAttr {
 			resourceAttrKeyVal := proxypb.KeyValue{}
 			resourceAttrKeyVal.Key = key
