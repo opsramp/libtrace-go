@@ -34,7 +34,6 @@ type Auth struct {
 	livelinessCheckInterval time.Duration
 	stopLiveliness          chan struct{}
 
-	renewInProgress bool
 	mut             sync.RWMutex
 	lastRenewedTime time.Time
 	authToken       AuthTokenResponse
@@ -80,7 +79,6 @@ func CreateNewAuth(endpoint, key, secret string, timeout time.Duration, transpor
 		liveliness:              false,
 		livelinessCheckInterval: livelinessInterval,
 		stopLiveliness:          make(chan struct{}),
-		renewInProgress:         false,
 		mut:                     sync.RWMutex{},
 		lastRenewedTime:         time.Time{},
 		authToken:               AuthTokenResponse{},
@@ -134,17 +132,19 @@ func (oauth *Auth) Valid() bool {
 }
 
 func (oauth *Auth) Renew() (string, error) {
-	if oauth.renewInProgress {
-		for oauth.renewInProgress {
+
+	// trying to check if we can acquire a lock
+	if !oauth.mut.TryLock() {
+		time.Sleep(time.Second * 5)
+		for !oauth.mut.TryLock() {
 			time.Sleep(time.Second * 5)
 		}
+
+		defer oauth.mut.Unlock()
 		return oauth.authToken.AccessToken, nil
 	}
 
-	oauth.mut.Lock()
 	defer oauth.mut.Unlock()
-	oauth.renewInProgress = true
-	defer func() { oauth.renewInProgress = false }()
 
 	authTokenResponse := AuthTokenResponse{}
 
