@@ -69,6 +69,7 @@ func (e *ExponentialBackOff) Start() {
 		for {
 			select {
 			case <-done.C:
+				e.Stop <- struct{}{}
 				return
 			case <-tick.C:
 				// send retry event since the timer is up

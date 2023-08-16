@@ -502,6 +502,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 		traceData.Data.ParentName, _ = ev.Data["parentName"].(string)
 
 		resourceAttr, _ := ev.Data["resourceAttributes"].(map[string]interface{})
+
 		for key, val := range resourceAttr {
 			resourceAttrKeyVal := proxypb.KeyValue{}
 			resourceAttrKeyVal.Key = key
