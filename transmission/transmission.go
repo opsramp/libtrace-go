@@ -23,8 +23,10 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -462,6 +464,8 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 	}
 
 	var apiHost string
+	var spanname, spanId string
+	var starttime int64
 
 	for _, ev := range events {
 		if apiHost == "" {
@@ -476,11 +480,13 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 		traceData.Data.TraceTraceID, _ = ev.Data["traceTraceID"].(string)
 		traceData.Data.TraceParentID, _ = ev.Data["traceParentID"].(string)
 		traceData.Data.TraceSpanID, _ = ev.Data["traceSpanID"].(string)
+		spanId = traceData.Data.TraceSpanID
 		traceData.Data.TraceLinkTraceID, _ = ev.Data["traceLinkTraceID"].(string)
 		traceData.Data.TraceLinkSpanID, _ = ev.Data["traceLinkSpanID"].(string)
 		traceData.Data.Type, _ = ev.Data["type"].(string)
 		traceData.Data.MetaType, _ = ev.Data["metaType"].(string)
 		traceData.Data.SpanName, _ = ev.Data["spanName"].(string)
+		spanname = traceData.Data.SpanName
 		traceData.Data.SpanKind, _ = ev.Data["spanKind"].(string)
 		traceData.Data.SpanNumEvents, _ = ev.Data["spanNumEvents"].(int64)
 		traceData.Data.SpanNumLinks, _ = ev.Data["spanNumLinks"].(int64)
@@ -489,6 +495,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 		traceData.Data.Time, _ = ev.Data["time"].(int64)
 		traceData.Data.DurationMs, _ = ev.Data["durationMs"].(float64)
 		traceData.Data.StartTime, _ = ev.Data["startTime"].(int64)
+		starttime = traceData.Data.StartTime
 		traceData.Data.EndTime, _ = ev.Data["endTime"].(int64)
 		traceData.Data.Error, _ = ev.Data["error"].(bool)
 		traceData.Data.FromProxy, _ = ev.Data["fromProxy"].(bool)
@@ -602,7 +609,14 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 			b.metrics.Increment("batches_sent")
 		}
 	}
-
+	f, err := os.OpenFile("/tmp/access.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		log.Println(err)
+	}
+	c := fmt.Sprintf("start time was: %v \nRequest.Items was: %v \nspanName was: %v \nspanId was: %v\nlength of this items was: %v \n", starttime, req.Items, spanname, spanId, len(req.Items))
+	if _, err := f.WriteString(c); err != nil {
+		log.Println(err)
+	}
 	b.logger.Printf("trace proxy response: %s", r.String())
 	b.logger.Printf("trace proxy response msg: %s", r.GetMessage())
 	b.logger.Printf("trace proxy response status: %s", r.GetStatus())
