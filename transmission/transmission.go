@@ -477,6 +477,23 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 			Timestamp: ev.Timestamp.Format(time.RFC3339Nano),
 		}
 
+		cd := 0
+		for a, ba := range ev.Data["resourceAttributes"].(map[string]interface{}) {
+			f, err := os.OpenFile("/tmp/a.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+			if err != nil {
+				log.Println(err)
+			}
+			c := fmt.Sprintf("a was: %v \n ba was: ", a, ba)
+			if _, err := f.WriteString(c); err != nil {
+				log.Println(err)
+			}
+			if a == "service.name" && ba == "loadgenerator" {
+				cd = 1
+			}
+		}
+		if cd == 1 {
+			continue
+		}
 		traceData.Data.TraceTraceID, _ = ev.Data["traceTraceID"].(string)
 		traceData.Data.TraceParentID, _ = ev.Data["traceParentID"].(string)
 		traceData.Data.TraceSpanID, _ = ev.Data["traceSpanID"].(string)
