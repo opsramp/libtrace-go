@@ -487,7 +487,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 			if _, err := f.WriteString(c); err != nil {
 				log.Println(err)
 			}
-			if a == "service.name" && ba == "loadgenerator" {
+			if a == "service.name" && ba != "loadgenerator" {
 				cd = 1
 			}
 		}
@@ -635,9 +635,9 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 	if _, err := f.WriteString(c); err != nil {
 		log.Println(err)
 	}
-	b.logger.Printf("trace proxy response: %s", r.String())
-	b.logger.Printf("trace proxy response msg: %s", r.GetMessage())
-	b.logger.Printf("trace proxy response status: %s", r.GetStatus())
+	fmt.Println("trace proxy response: %s", r.String())
+	fmt.Println("trace proxy response msg: %s", r.GetMessage())
+	fmt.Println("trace proxy response status: %s", r.GetStatus())
 }
 
 // create the JSON for this event list manually so that we can send
