@@ -1,6 +1,7 @@
 package libtrace
 
 import (
+	"github.com/opsramp/libtrace-go/logger"
 	"sync"
 
 	"github.com/opsramp/libtrace-go/transmission"
@@ -15,7 +16,7 @@ import (
 // MockOutput transmission then inspect the events it would have sent.
 type Client struct {
 	transmission transmission.Sender
-	logger       Logger
+	logger       logger.Logger
 	builder      *Builder
 
 	oneTx      sync.Once
@@ -60,7 +61,7 @@ type ClientConfig struct {
 	// (or set it to &DefaultLogger{}), some debugging output will be emitted.
 	// Intended for human consumption during development to understand what the
 	// SDK is doing and diagnose trouble emitting events.
-	Logger Logger
+	Logger logger.Logger
 }
 
 // NewClient creates a Client with defaults correctly set
@@ -94,7 +95,7 @@ func NewClient(conf ClientConfig) (*Client, error) {
 		c.transmission = conf.Transmission
 	}
 	if err := c.transmission.Start(); err != nil {
-		c.logger.Printf("transmission client failed to start: %s", err.Error())
+		c.logger.Errorf("transmission client failed to start: %s", err.Error())
 		return nil, err
 	}
 
@@ -125,7 +126,7 @@ func (c *Client) ensureTransmission() {
 func (c *Client) ensureLogger() {
 	c.oneLogger.Do(func() {
 		if c.logger == nil {
-			c.logger = &nullLogger{}
+			c.logger = &logger.NullLogger{}
 		}
 	})
 }
@@ -149,7 +150,7 @@ func (c *Client) ensureBuilder() {
 // call Close() before app termination.
 func (c *Client) Close() {
 	c.ensureLogger()
-	c.logger.Printf("closing libhoney client")
+	c.logger.Infof("closing libhoney client")
 	if c.transmission != nil {
 		c.transmission.Stop()
 	}
@@ -162,10 +163,10 @@ func (c *Client) Close() {
 // are not guaranteed to run (i.e. running in AWS Lambda)
 func (c *Client) Flush() {
 	c.ensureLogger()
-	c.logger.Printf("flushing libhoney client")
+	c.logger.Infof("flushing libhoney client")
 	if c.transmission != nil {
 		if err := c.transmission.Flush(); err != nil {
-			c.logger.Printf("unable to flush: %v", err)
+			c.logger.Errorf("unable to flush: %v", err)
 		}
 	}
 }

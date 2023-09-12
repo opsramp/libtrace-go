@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/opsramp/libtrace-go/logger"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
@@ -128,7 +129,7 @@ type TraceProxy struct {
 	muster     *muster.Client
 	musterLock sync.RWMutex
 
-	Logger  Logger
+	Logger  logger.Logger
 	Metrics Metrics
 
 	UseTls         bool
@@ -151,7 +152,7 @@ type TraceProxy struct {
 
 func (h *TraceProxy) Start() error {
 	if h.Logger == nil {
-		h.Logger = &nullLogger{}
+		h.Logger = &logger.NullLogger{}
 	}
 	if h.TenantId == "" {
 		return fmt.Errorf("tenantId cant be empty")
@@ -244,7 +245,7 @@ func (h *TraceProxy) createMuster() *muster.Client {
 }
 
 func (h *TraceProxy) Stop() error {
-	h.Logger.Printf("TraceProxy transmission stopping")
+	h.Logger.Infof("TraceProxy transmission stopping")
 	err := h.muster.Stop()
 	if h.responses != nil {
 		close(h.responses)
@@ -288,7 +289,7 @@ func (h *TraceProxy) Add(ev *Event) {
 		Err:      errors.New("queue overflow"),
 		Metadata: ev.Metadata,
 	}
-	h.Logger.Printf("got response code %d, error %s, and body %s",
+	h.Logger.Debugf("got response code %d, error %s, and body %s",
 		r.StatusCode, r.Err, string(r.Body))
 	writeToResponse(h.responses, r, h.BlockOnResponse)
 }
@@ -302,7 +303,7 @@ func (h *TraceProxy) tryAdd(ev *Event) bool {
 	// Even though this queue is locked against changing h.Muster, the Work queue length
 	// could change due to actions on the worker side, so make sure we only measure it once.
 	qlen := len(h.muster.Work)
-	h.Logger.Printf("adding event to transmission; queue length %d", qlen)
+	h.Logger.Debugf("adding event to transmission; queue length %d", qlen)
 	h.Metrics.Gauge("queue_length", qlen)
 
 	if h.BlockOnSend {
@@ -356,7 +357,7 @@ type batchAgg struct {
 	testNower   nower
 	testBlocker *sync.WaitGroup
 
-	logger Logger
+	logger logger.Logger
 
 	useTls         bool
 	useTlsInsecure bool
@@ -453,6 +454,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 		return
 	}
 	_, numEncoded := b.encodeBatchProtoBuf(events)
+	b.logger.Debugf("num encoded: %d", numEncoded)
 	if numEncoded == 0 {
 		return
 	}
@@ -502,7 +504,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 
 			switch v := val.(type) {
 			case nil:
-				b.logger.Printf("x is nil") // here v has type interface{}
+				b.logger.Errorf("resource attribute value is nil") // here v has type interface{}
 			case string:
 				resourceAttrKeyVal.Value = &proxypb.AnyValue{Value: &proxypb.AnyValue_StringValue{StringValue: v}} // here v has type int
 			case bool:
@@ -510,7 +512,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 			case int64:
 				resourceAttrKeyVal.Value = &proxypb.AnyValue{Value: &proxypb.AnyValue_IntValue{IntValue: v}} // here v has type interface{}
 			default:
-				b.logger.Printf("type unknown: ", v) // here v has type interface{}
+				b.logger.Errorf("resource attribute type unknown: ", v) // here v has type interface{}
 			}
 
 			traceData.Data.ResourceAttributes = append(traceData.Data.ResourceAttributes, &resourceAttrKeyVal)
@@ -523,7 +525,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 
 			switch v := val.(type) {
 			case nil:
-				b.logger.Printf("x is nil") // here v has type interface{}
+				b.logger.Errorf("span attribute value is nil") // here v has type interface{}
 			case string:
 				spanAttrKeyVal.Value = &proxypb.AnyValue{Value: &proxypb.AnyValue_StringValue{StringValue: v}} // here v has type int
 			case bool:
@@ -531,7 +533,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 			case int64:
 				spanAttrKeyVal.Value = &proxypb.AnyValue{Value: &proxypb.AnyValue_IntValue{IntValue: v}} // here v has type interface{}
 			default:
-				b.logger.Printf("type unknown: %v", v) // here v has type interface{}
+				b.logger.Errorf("span attribute type unknown: %v", v) // here v has type interface{}
 			}
 
 			traceData.Data.SpanAttributes = append(traceData.Data.SpanAttributes, &spanAttrKeyVal)
@@ -545,7 +547,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 
 			switch v := val.(type) {
 			case nil:
-				b.logger.Printf("x is nil") // here v has type interface{}
+				b.logger.Errorf("event attribute value is nil") // here v has type interface{}
 			case string:
 				eventAttrKeyVal.Value = &proxypb.AnyValue{Value: &proxypb.AnyValue_StringValue{StringValue: v}} // here v has type int
 			case bool:
@@ -553,7 +555,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 			case int64:
 				eventAttrKeyVal.Value = &proxypb.AnyValue{Value: &proxypb.AnyValue_IntValue{IntValue: v}} // here v has type interface{}
 			default:
-				b.logger.Printf("type unknown: %v", v) // here v has type interface{}
+				b.logger.Errorf("event attribute type unknown: %v", v) // here v has type interface{}
 			}
 
 			traceData.Data.EventAttributes = append(traceData.Data.EventAttributes, &eventAttrKeyVal)
@@ -577,7 +579,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 		apiHostURL, err := url.Parse(apiHost)
 		if err != nil {
 			sendDirect = true
-			b.logger.Printf("sending directly, unable to parse peer url: %v", err)
+			b.logger.Errorf("sending directly, unable to parse peer url: %v", err)
 		}
 		apiPort := apiHostURL.Port()
 		if apiPort == "" {
@@ -587,7 +589,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 		conn, err := grpc.Dial(apiHost, opts...)
 		if err != nil {
 			sendDirect = true
-			b.logger.Printf("sending directly, unable to establish connection to %s error: %v", apiHost, err)
+			b.logger.Errorf("sending directly, unable to establish connection to %s error: %v", apiHost, err)
 		}
 		if !sendDirect {
 			b.client = proxypb.NewTraceProxyServiceClient(conn)
@@ -597,16 +599,15 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 	r, err := b.client.ExportTraceProxy(ctx, &req)
 	if st, ok := status.FromError(err); ok {
 		if st.Code() != codes.OK {
-			b.logger.Printf("sending failed. error: %s", st.String())
+			b.logger.Errorf("sending failed. error: %s", st.String())
 			b.metrics.Increment("send_errors")
 		} else {
 			b.metrics.Increment("batches_sent")
 		}
 	}
 
-	b.logger.Printf("trace proxy response: %s", r.String())
-	b.logger.Printf("trace proxy response msg: %s", r.GetMessage())
-	b.logger.Printf("trace proxy response status: %s", r.GetStatus())
+	b.logger.Debugf("trace proxy response msg: %s", r.GetMessage())
+	b.logger.Debugf("trace proxy response status: %s", r.GetStatus())
 }
 
 // create the JSON for this event list manually so that we can send

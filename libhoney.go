@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/opsramp/libtrace-go/logger"
 	"math/rand"
 	"net/http"
 	"os"
@@ -143,7 +144,7 @@ type Config struct {
 	// (or set it to &DefaultLogger{}), some debugging output will be emitted.
 	// Intended for human consumption during development to understand what the
 	// SDK is doing and diagnose trouble emitting events.
-	Logger Logger
+	Logger logger.Logger
 }
 
 func (c *Config) getDataset() string {
@@ -927,9 +928,9 @@ func (e *Event) SendPresampled() (err error) {
 	e.client.ensureLogger()
 	defer func() {
 		if err != nil {
-			e.client.logger.Printf("Failed to send event. err: %s, event: %+v", err, e)
+			e.client.logger.Errorf("Failed to send event. err: %s, event: %+v", err, e)
 		} else {
-			e.client.logger.Printf("Send enqueued event: %+v", e)
+			e.client.logger.Debugf("Send enqueued event: %+v", e)
 		}
 	}()
 
@@ -954,14 +955,14 @@ func (e *Event) SendPresampled() (err error) {
 	isMockSender := strings.HasSuffix(senderType, "transmission.MockSender")
 	if isOpsrampSender || isMockSender {
 		if e.APIHost == "" {
-			return errors.New("No APIHost for TraceProxy. Can't send to the Great Unknown.")
+			return errors.New("no APIHost for TraceProxy. Can't send to the Great Unknown")
 		}
 		//if e.WriteKey == "" {
 		//	return errors.New("No WriteKey specified. Can't send event.")
 		//}
 	}
 	if e.Dataset == "" {
-		return errors.New("No Dataset for TraceProxy. Can't send datasetless.")
+		return errors.New("no Dataset for TraceProxy. Can't send datasetless")
 	}
 
 	// Mark the event as sent, no more field changes will be applied.
@@ -969,8 +970,7 @@ func (e *Event) SendPresampled() (err error) {
 
 	e.client.ensureTransmission()
 	txEvent := &transmission.Event{
-		APIHost: e.APIHost,
-		//APIKey:      e.WriteKey,
+		APIHost:     e.APIHost,
 		APIToken:    e.APIToken,
 		APITenantId: e.APITenantId,
 		Dataset:     e.Dataset,
@@ -1037,7 +1037,6 @@ func (e *Event) SendPresampled() (err error) {
 // field values, and configuration inherited from the builder.
 func (b *Builder) NewEvent() *Event {
 	e := &Event{
-		//WriteKey:   b.WriteKey,
 		Dataset:    b.Dataset,
 		SampleRate: b.SampleRate,
 		APIHost:    b.APIHost,
