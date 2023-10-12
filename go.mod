@@ -1,6 +1,6 @@
 module github.com/opsramp/libtrace-go
 
-go 1.21
+go 1.21.3
 
 require (
 	github.com/facebookgo/muster v0.0.0-20150708232844-fd3d7953fd52
@@ -27,9 +27,9 @@ require (
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/rogpeppe/go-internal v1.11.0 // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
-	golang.org/x/net v0.12.0 // indirect
-	golang.org/x/sys v0.10.0 // indirect
-	golang.org/x/text v0.11.0 // indirect
+	golang.org/x/net v0.17.0 // indirect
+	golang.org/x/sys v0.13.0 // indirect
+	golang.org/x/text v0.13.0 // indirect
 	google.golang.org/genproto v0.0.0-20230717213848-3f92550aa753 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
