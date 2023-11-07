@@ -32,7 +32,7 @@ func TestEventMarshal(t *testing.T) {
 	e.SampleRate = 5
 	b, err = json.Marshal(e)
 	testOK(t, err)
-	testEquals(t, string(b), `{"data":{"a":1,"b":1,"c":true,"d":"foo","e":1000,"f":{"f":1},"g":{"g":1}},"samplerate":5,"time":"2016-10-12T22:00:45Z"}`)
+	testEquals(t, string(b), `{"data":{"a":1,"b":1,"c":true,"d":"foo","e":1000,"f":{"f":1},"g":{"g":1}},"samplerate":5,"timestamp":"2016-10-12T22:00:45Z"}`)
 
 	var buf bytes.Buffer
 	err = msgpack.NewEncoder(&buf).Encode(e)

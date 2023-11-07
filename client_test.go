@@ -38,16 +38,18 @@ func TestClientAdding(t *testing.T) {
 }
 
 func TestNewClient(t *testing.T) {
-	conf := ClientConfig{}
+	conf := ClientConfig{
+		Transmission: &transmission.MockSender{},
+	}
 	c, err := NewClient(conf)
 
 	assert.NoError(t, err, "new client should not error")
-	assert.Equal(t, "Oliver", c.builder.WriteKey, "initialized client should respect config")
+	assert.Equal(t, "", c.builder.WriteKey, "initialized client should respect config")
 }
 
 func TestClientIsolated(t *testing.T) {
-	c1, _ := NewClient(ClientConfig{})
-	c2, _ := NewClient(ClientConfig{})
+	c1, _ := NewClient(ClientConfig{Transmission: &transmission.MockSender{}})
+	c2, _ := NewClient(ClientConfig{Transmission: &transmission.MockSender{}})
 
 	AddField("Mary", 83)
 	c1.AddField("Ursula", 88)
@@ -75,7 +77,9 @@ func TestClientRaces(t *testing.T) {
 	wg.Add(3)
 	for i := 0; i < 3; i++ {
 		go func() {
-			c, _ := NewClient(ClientConfig{})
+			c, _ := NewClient(ClientConfig{
+				Transmission: &transmission.MockSender{},
+			})
 			c.AddField("name", "val")
 			ev := c.NewEvent()
 			ev.AddField("argel", "bargle")
