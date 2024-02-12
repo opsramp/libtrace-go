@@ -13,6 +13,13 @@ service TraceProxyService {
     };
   }
 
+  rpc ExportLogTraceProxy(ExportLogTraceProxyServiceRequest) returns (ExportTraceProxyServiceResponse) {
+    option (google.api.http) = {
+      post: "/trace-proxy/api/v7/tenants/{tenantId}/log-traces",
+      body: "*",
+    };
+  }
+
   rpc Status(StatusRequest) returns(StatusResponse) {
 
   }
@@ -29,8 +36,18 @@ message ExportTraceProxyServiceRequest {
   string tenantId = 2;
 }
 
+message ExportLogTraceProxyServiceRequest {
+  repeated ProxyLogSpan items = 1;
+  string tenantId = 2;
+}
+
 message ProxySpan {
   Data data = 1;
+  string timestamp = 2;
+}
+
+message ProxyLogSpan {
+  LogTraceData data = 1;
   string timestamp = 2;
 }
 
@@ -63,6 +80,45 @@ message Data {
   repeated KeyValue eventAttributes = 24;
   int64 startTime = 25;
   int64 endTime = 26;
+}
+
+message LogTraceData {
+  double durationMs = 1;
+  string type = 4;
+  string spanName = 5;
+  string parentName = 6;
+  string spanKind = 8;
+  int64 spanNumEvents = 9;
+  int64 spanNumLinks = 10;
+  int64 statusCode = 11;
+  bool fromProxy = 12;
+  string traceParentID = 13;
+  string traceSpanID = 14;
+  string traceTraceID = 15;
+  string traceLinkSpanID = 16;
+  string traceLinkTraceID = 17;
+  bool error = 18;
+  string statusMessage = 19;
+  int64 time = 20;
+  string metaType = 21;
+
+  // The OpenTelemetry API specification further restricts the allowed value types:
+  // https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/common/common.md#attributes
+  // Attribute keys MUST be unique (it is not allowed to have more than one
+  // attribute with the same key).
+  repeated KeyValue resourceAttributes = 22;
+  repeated KeyValue spanAttributes = 23;
+  repeated KeyValue eventAttributes = 24;
+  repeated SpanEvent spanEvents = 25;
+  int64 startTime = 26;
+  int64 endTime = 27;
+}
+
+
+message SpanEvent {
+  string name = 1;
+  uint64 timeStamp = 2;
+  repeated KeyValue spanEventAttributes = 3;
 }
 
 // AnyValue is used to represent any type of attribute value. AnyValue may contain a

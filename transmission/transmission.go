@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/opsramp/libtrace-go/logger"
+	v1 "go.opentelemetry.io/proto/otlp/logs/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
@@ -26,6 +27,7 @@ import (
 	"google.golang.org/grpc/status"
 	"net/http"
 	"net/url"
+	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -36,6 +38,8 @@ import (
 	"github.com/opsramp/libtrace-go/proto/proxypb"
 	"github.com/opsramp/libtrace-go/version"
 	"github.com/vmihailenco/msgpack/v5"
+	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
+	v11 "go.opentelemetry.io/proto/otlp/common/v1"
 )
 
 const (
@@ -148,6 +152,10 @@ type TraceProxy struct {
 
 	defaultAuth *Auth
 	client      proxypb.TraceProxyServiceClient
+	logsClient  collogspb.LogsServiceClient
+
+	LogsEndpoint string
+	SendEvents   bool
 }
 
 func (h *TraceProxy) Start() error {
@@ -203,6 +211,26 @@ func (h *TraceProxy) Start() error {
 	}
 	h.client = proxypb.NewTraceProxyServiceClient(conn)
 
+	fmt.Println("**************(h.LogsEndpoint: ", (h.LogsEndpoint))
+
+	logsApiHostUrl, logsAPiErr := url.Parse(h.LogsEndpoint)
+	if logsAPiErr != nil {
+		h.Logger.Errorf("Logs url parser error: ", logsAPiErr)
+		h.SendEvents = false
+	}
+	logsApiPort := logsApiHostUrl.Port()
+	if logsApiPort == "" {
+		logsApiPort = "443"
+	}
+	logsApiHost := fmt.Sprintf("%s:%s", logsApiHostUrl.Hostname(), logsApiPort)
+	logsConn, logsErr := grpc.Dial(logsApiHost, opts...)
+	if logsErr != nil {
+		h.Logger.Errorf("Logs Connection unable to establish: ", logsErr)
+		h.SendEvents = false
+	} else {
+		h.logsClient = collogspb.NewLogsServiceClient(logsConn)
+	}
+
 	h.responses = make(chan Response, h.PendingWorkCapacity*2)
 	if h.Metrics == nil {
 		h.Metrics = &nullMetrics{}
@@ -216,6 +244,7 @@ func (h *TraceProxy) Start() error {
 				userAgentAddition:     h.UserAgentAddition,
 				batches:               map[string][]*Event{},
 				client:                h.client,
+				logsClient:            h.logsClient,
 				blockOnResponse:       h.BlockOnResponse,
 				responses:             h.responses,
 				metrics:               h.Metrics,
@@ -225,10 +254,11 @@ func (h *TraceProxy) Start() error {
 				tenantId:              h.TenantId,
 				dataset:               h.Dataset,
 				isPeer:                h.IsPeer,
+				sendEvents:            h.SendEvents,
+				sendTraces:            true,
 			}
 		}
 	}
-
 	m := h.createMuster()
 	h.muster = m
 	return h.muster.Start()
@@ -366,7 +396,10 @@ type batchAgg struct {
 	dataset  string
 	isPeer   bool
 
-	client proxypb.TraceProxyServiceClient
+	client     proxypb.TraceProxyServiceClient
+	logsClient collogspb.LogsServiceClient
+	sendEvents bool
+	sendTraces bool
 }
 
 // batch is a collection of events that will all be POSTed as one HTTP call
@@ -459,16 +492,18 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 		return
 	}
 
-	req := proxypb.ExportTraceProxyServiceRequest{
+	logTraceReq := proxypb.ExportLogTraceProxyServiceRequest{
+		TenantId: b.tenantId,
+	}
+
+	traceReq := proxypb.ExportTraceProxyServiceRequest{
 		TenantId: b.tenantId,
 	}
 
 	var apiHost string
-
+	var resourceLogs []*v1.ResourceLogs
 	for _, ev := range events {
-		if apiHost == "" {
-			apiHost = ev.APIHost
-		}
+		apiHost = ev.APIHost
 
 		traceData := proxypb.ProxySpan{
 			Data:      &proxypb.Data{},
@@ -561,17 +596,180 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 			traceData.Data.EventAttributes = append(traceData.Data.EventAttributes, &eventAttrKeyVal)
 		}
 
-		req.Items = append(req.Items, &traceData)
+		traceReq.Items = append(traceReq.Items, &traceData)
+
+		var LogRecords []*v1.LogRecord
+		for _, event := range ev.SpanEvents {
+			var recordAttributes []*v11.KeyValue
+			for key, val := range event.Attributes {
+				spanEventAttrKeyVal := &v11.KeyValue{}
+				spanEventAttrKeyVal.Key = key
+				switch v := val.(type) {
+				case nil:
+					b.logger.Errorf("event attribute value is nil") // here v has type interface{}
+				case string:
+					spanEventAttrKeyVal.Value = &v11.AnyValue{Value: &v11.AnyValue_StringValue{StringValue: v}} // here v has type string
+				case bool:
+					spanEventAttrKeyVal.Value = &v11.AnyValue{Value: &v11.AnyValue_BoolValue{BoolValue: v}} // here v has type interface{}
+				case int64:
+					spanEventAttrKeyVal.Value = &v11.AnyValue{Value: &v11.AnyValue_IntValue{IntValue: v}} // here v has type interface{}
+				default:
+					b.logger.Errorf("event attribute type unknown: %v", v) // here v has type interface{}
+				}
+				recordAttributes = append(recordAttributes, spanEventAttrKeyVal)
+			}
+			LogRecord := &v1.LogRecord{
+				TimeUnixNano:           event.Timestamp,
+				ObservedTimeUnixNano:   0,
+				SeverityNumber:         0,
+				SeverityText:           "",
+				Body:                   &v11.AnyValue{Value: &v11.AnyValue_StringValue{StringValue: event.Name}},
+				Attributes:             recordAttributes,
+				DroppedAttributesCount: 0,
+				Flags:                  0,
+				TraceId:                nil,
+				SpanId:                 nil,
+			}
+			LogRecords = append(LogRecords, LogRecord)
+		}
+		if len(LogRecords) > 0 {
+			var scopeLogs []*v1.ScopeLogs
+			scopeLog := &v1.ScopeLogs{
+				Scope:      nil,
+				LogRecords: LogRecords,
+				SchemaUrl:  "",
+			}
+			scopeLogs = append(scopeLogs, scopeLog)
+
+			resourceLog := &v1.ResourceLogs{
+				ScopeLogs: scopeLogs,
+			}
+			resourceLogs = append(resourceLogs, resourceLog)
+		}
+		logtraceData := proxypb.ProxyLogSpan{
+			Data:      &proxypb.LogTraceData{},
+			Timestamp: ev.Timestamp.Format(time.RFC3339Nano),
+		}
+
+		logtraceData.Data.TraceTraceID, _ = ev.Data["traceTraceID"].(string)
+		logtraceData.Data.TraceParentID, _ = ev.Data["traceParentID"].(string)
+		logtraceData.Data.TraceSpanID, _ = ev.Data["traceSpanID"].(string)
+		logtraceData.Data.TraceLinkTraceID, _ = ev.Data["traceLinkTraceID"].(string)
+		logtraceData.Data.TraceLinkSpanID, _ = ev.Data["traceLinkSpanID"].(string)
+		logtraceData.Data.Type, _ = ev.Data["type"].(string)
+		logtraceData.Data.MetaType, _ = ev.Data["metaType"].(string)
+		logtraceData.Data.SpanName, _ = ev.Data["spanName"].(string)
+		logtraceData.Data.SpanKind, _ = ev.Data["spanKind"].(string)
+		logtraceData.Data.SpanNumEvents, _ = ev.Data["spanNumEvents"].(int64)
+		logtraceData.Data.SpanNumLinks, _ = ev.Data["spanNumLinks"].(int64)
+		logtraceData.Data.StatusCode, _ = ev.Data["statusCode"].(int64)
+		logtraceData.Data.StatusMessage, _ = ev.Data["statusMessage"].(string)
+		logtraceData.Data.Time, _ = ev.Data["time"].(int64)
+		logtraceData.Data.DurationMs, _ = ev.Data["durationMs"].(float64)
+		logtraceData.Data.StartTime, _ = ev.Data["startTime"].(int64)
+		logtraceData.Data.EndTime, _ = ev.Data["endTime"].(int64)
+		logtraceData.Data.Error, _ = ev.Data["error"].(bool)
+		logtraceData.Data.FromProxy, _ = ev.Data["fromProxy"].(bool)
+		logtraceData.Data.ParentName, _ = ev.Data["parentName"].(string)
+
+		logTraceResourceAttr, _ := ev.Data["resourceAttributes"].(map[string]interface{})
+
+		for key, val := range logTraceResourceAttr {
+			resourceAttrKeyVal := proxypb.KeyValue{}
+			resourceAttrKeyVal.Key = key
+
+			switch v := val.(type) {
+			case nil:
+				b.logger.Errorf("resource attribute value is nil") // here v has type interface{}
+			case string:
+				resourceAttrKeyVal.Value = &proxypb.AnyValue{Value: &proxypb.AnyValue_StringValue{StringValue: v}} // here v has type int
+			case bool:
+				resourceAttrKeyVal.Value = &proxypb.AnyValue{Value: &proxypb.AnyValue_BoolValue{BoolValue: v}} // here v has type interface{}
+			case int64:
+				resourceAttrKeyVal.Value = &proxypb.AnyValue{Value: &proxypb.AnyValue_IntValue{IntValue: v}} // here v has type interface{}
+			default:
+				b.logger.Errorf("resource attribute type unknown: ", v) // here v has type interface{}
+			}
+			logtraceData.Data.ResourceAttributes = append(logtraceData.Data.ResourceAttributes, &resourceAttrKeyVal)
+		}
+		logTraceSpanAttr, _ := ev.Data["spanAttributes"].(map[string]interface{})
+		for key, val := range logTraceSpanAttr {
+			spanAttrKeyVal := proxypb.KeyValue{}
+			spanAttrKeyVal.Key = key
+			//spanAttrKeyVal.Value = val.(*proxypb.AnyValue)
+
+			switch v := val.(type) {
+			case nil:
+				b.logger.Errorf("span attribute value is nil") // here v has type interface{}
+			case string:
+				spanAttrKeyVal.Value = &proxypb.AnyValue{Value: &proxypb.AnyValue_StringValue{StringValue: v}} // here v has type int
+			case bool:
+				spanAttrKeyVal.Value = &proxypb.AnyValue{Value: &proxypb.AnyValue_BoolValue{BoolValue: v}} // here v has type interface{}
+			case int64:
+				spanAttrKeyVal.Value = &proxypb.AnyValue{Value: &proxypb.AnyValue_IntValue{IntValue: v}} // here v has type interface{}
+			default:
+				b.logger.Errorf("span attribute type unknown: %v", v) // here v has type interface{}
+			}
+
+			logtraceData.Data.SpanAttributes = append(logtraceData.Data.SpanAttributes, &spanAttrKeyVal)
+		}
+
+		logTraceEventAttr, _ := ev.Data["eventAttributes"].(map[string]interface{})
+		for key, val := range logTraceEventAttr {
+			eventAttrKeyVal := proxypb.KeyValue{}
+			eventAttrKeyVal.Key = key
+			//spanAttrKeyVal.Value = val.(*proxypb.AnyValue)
+
+			switch v := val.(type) {
+			case nil:
+				b.logger.Errorf("event attribute value is nil") // here v has type interface{}
+			case string:
+				eventAttrKeyVal.Value = &proxypb.AnyValue{Value: &proxypb.AnyValue_StringValue{StringValue: v}} // here v has type int
+			case bool:
+				eventAttrKeyVal.Value = &proxypb.AnyValue{Value: &proxypb.AnyValue_BoolValue{BoolValue: v}} // here v has type interface{}
+			case int64:
+				eventAttrKeyVal.Value = &proxypb.AnyValue{Value: &proxypb.AnyValue_IntValue{IntValue: v}} // here v has type interface{}
+			default:
+				b.logger.Errorf("event attribute type unknown: %v", v) // here v has type interface{}
+			}
+
+			logtraceData.Data.EventAttributes = append(logtraceData.Data.EventAttributes, &eventAttrKeyVal)
+		}
+
+		for _, spanEvent := range ev.SpanEvents {
+			var proxypbSpanEvent proxypb.SpanEvent
+			proxypbSpanEvent.Name = spanEvent.Name
+			proxypbSpanEvent.TimeStamp = spanEvent.Timestamp
+			for key, val := range spanEvent.Attributes {
+				spanEventAttrKeyVal := &proxypb.KeyValue{}
+				spanEventAttrKeyVal.Key = key
+				switch v := val.(type) {
+				case nil:
+					b.logger.Errorf("event attribute value is nil") // here v has type interface{}
+				case string:
+					spanEventAttrKeyVal.Value = &proxypb.AnyValue{Value: &proxypb.AnyValue_StringValue{StringValue: v}} // here v has type string
+				case bool:
+					spanEventAttrKeyVal.Value = &proxypb.AnyValue{Value: &proxypb.AnyValue_BoolValue{BoolValue: v}} // here v has type interface{}
+				case int64:
+					spanEventAttrKeyVal.Value = &proxypb.AnyValue{Value: &proxypb.AnyValue_IntValue{IntValue: v}} // here v has type interface{}
+				default:
+					b.logger.Errorf("event attribute type unknown: %v", v) // here v has type interface{}
+				}
+				proxypbSpanEvent.SpanEventAttributes = append(proxypbSpanEvent.SpanEventAttributes, spanEventAttrKeyVal)
+			}
+			logtraceData.Data.SpanEvents = append(logtraceData.Data.SpanEvents, &proxypbSpanEvent)
+		}
+		logTraceReq.Items = append(logTraceReq.Items, &logtraceData)
 	}
 
-	//Add headers
 	ctx := metadata.NewOutgoingContext(context.Background(), metadata.New(map[string]string{
 		"tenantId": b.tenantId,
 		"dataset":  b.dataset,
 	}))
 
-	if b.isPeer && apiHost != "" {
-		var sendDirect bool
+	var sendDirect bool
+
+	if b.isPeer {
 		opts := []grpc.DialOption{
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
 		}
@@ -581,33 +779,91 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 			sendDirect = true
 			b.logger.Errorf("sending directly, unable to parse peer url: %v", err)
 		}
+
 		apiPort := apiHostURL.Port()
 		if apiPort == "" {
 			apiPort = "80"
 		}
-		apiHost := fmt.Sprintf("%s:%s", apiHostURL.Hostname(), apiPort)
+		apiHost = fmt.Sprintf("%s:%s", apiHostURL.Hostname(), apiPort)
 		conn, err := grpc.Dial(apiHost, opts...)
 		if err != nil {
 			sendDirect = true
 			b.logger.Errorf("sending directly, unable to establish connection to %s error: %v", apiHost, err)
 		}
+
 		if !sendDirect {
 			b.client = proxypb.NewTraceProxyServiceClient(conn)
+			r, err := b.client.ExportLogTraceProxy(ctx, &logTraceReq)
+			if st, ok := status.FromError(err); ok {
+				if st.Code() != codes.OK {
+					b.logger.Errorf("sending failed. error: %s", st.String())
+					b.metrics.Increment("send_errors")
+				} else {
+					b.metrics.Increment("batches_sent")
+				}
+			}
+
+			fmt.Println("Error Was: ", err)
+
+			b.logger.Debugf("trace proxy response msg: %s", r.GetMessage())
+			b.logger.Debugf("trace proxy response status: %s", r.GetStatus())
+
+			return
 		}
 	}
 
-	r, err := b.client.ExportTraceProxy(ctx, &req)
-	if st, ok := status.FromError(err); ok {
-		if st.Code() != codes.OK {
-			b.logger.Errorf("sending failed. error: %s", st.String())
-			b.metrics.Increment("send_errors")
+	if sendDirect || !b.isPeer {
+		if b.sendTraces {
+			r, err := b.client.ExportTraceProxy(ctx, &traceReq)
+			if st, ok := status.FromError(err); ok {
+				if st.Code() != codes.OK {
+					b.logger.Errorf("sending failed. error: %s", st.String())
+					b.metrics.Increment("send_errors")
+					if strings.Contains(strings.ToUpper(fmt.Sprintf("%s", err.Error())), "TRACE MANAGEMENT WAS NOT ENABLED") {
+						b.logger.Errorf("Enable Trace Management For Tenant and Restart Tracing Proxy")
+						b.sendTraces = false
+					}
+				} else {
+					b.metrics.Increment("batches_sent")
+				}
+			}
+			b.logger.Debugf("trace proxy response msg: %s", r.GetMessage())
+			b.logger.Debugf("trace proxy response status: %s", r.GetStatus())
+		}
+		if b.sendEvents || len(resourceLogs) > 0 {
+			eventsReq := collogspb.ExportLogsServiceRequest{
+				ResourceLogs: resourceLogs,
+			}
+
+			hostName, err := os.Hostname()
+			if err != nil || hostName == "" {
+				b.logger.Errorf("error Getting Hostname: ", err)
+				hostName = fmt.Sprintf("ErrorHostname")
+			}
+
+			logsCtx := metadata.NewOutgoingContext(context.Background(), metadata.New(map[string]string{
+				"tenantId": b.tenantId,
+				"hostname": hostName,
+			}))
+			logsResponse, logsError := b.logsClient.Export(logsCtx, &eventsReq)
+
+			if st, ok := status.FromError(logsError); ok {
+				if st.Code() != codes.OK {
+					b.logger.Errorf("sending event log failed. error: %s", st.String())
+					if strings.Contains(fmt.Sprintf("%s", logsError.Error()), "LOG MANAGEMENT WAS NOT ENABLED") {
+						b.logger.Errorf("Enable Log Management For Tenant and Restart Tracing Proxy")
+						b.sendEvents = false
+					}
+				}
+
+			}
+			b.logger.Debugf("Sending Event Log Success: ", logsResponse.String())
 		} else {
-			b.metrics.Increment("batches_sent")
+			b.logger.Debugf("Unable to Process the logs exporting because SendEvents was: ", b.sendEvents, " or len(resourcelogs) ", len(resourceLogs))
 		}
 	}
 
-	b.logger.Debugf("trace proxy response msg: %s", r.GetMessage())
-	b.logger.Debugf("trace proxy response status: %s", r.GetStatus())
+	return
 }
 
 // create the JSON for this event list manually so that we can send

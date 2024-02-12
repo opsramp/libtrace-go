@@ -33,6 +33,14 @@ type Event struct {
 
 	APIToken    string
 	APITenantId string
+
+	SpanEvents []SpanEvent
+}
+
+type SpanEvent struct {
+	Attributes map[string]interface{}
+	Timestamp  uint64
+	Name       string
 }
 
 // Marshaling an Event for batching up to the Opsramp servers. Omits fields

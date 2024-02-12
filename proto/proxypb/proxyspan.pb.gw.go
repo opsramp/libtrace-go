@@ -99,8 +99,8 @@ func local_request_TraceProxyService_ExportTraceProxy_0(ctx context.Context, mar
 
 }
 
-func request_TraceProxyService_Status_0(ctx context.Context, marshaler runtime.Marshaler, client TraceProxyServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
-	var protoReq StatusRequest
+func request_TraceProxyService_ExportLogTraceProxy_0(ctx context.Context, marshaler runtime.Marshaler, client TraceProxyServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var protoReq ExportLogTraceProxyServiceRequest
 	var metadata runtime.ServerMetadata
 
 	newReader, berr := utilities.IOReaderFactory(req.Body)
@@ -111,13 +111,30 @@ func request_TraceProxyService_Status_0(ctx context.Context, marshaler runtime.M
 		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
 	}
 
-	msg, err := client.Status(ctx, &protoReq, grpc.Header(&metadata.HeaderMD), grpc.Trailer(&metadata.TrailerMD))
+	var (
+		val string
+		ok  bool
+		err error
+		_   = err
+	)
+
+	val, ok = pathParams["tenantId"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "tenantId")
+	}
+
+	protoReq.TenantId, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "tenantId", err)
+	}
+
+	msg, err := client.ExportLogTraceProxy(ctx, &protoReq, grpc.Header(&metadata.HeaderMD), grpc.Trailer(&metadata.TrailerMD))
 	return msg, metadata, err
 
 }
 
-func local_request_TraceProxyService_Status_0(ctx context.Context, marshaler runtime.Marshaler, server TraceProxyServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
-	var protoReq StatusRequest
+func local_request_TraceProxyService_ExportLogTraceProxy_0(ctx context.Context, marshaler runtime.Marshaler, server TraceProxyServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var protoReq ExportLogTraceProxyServiceRequest
 	var metadata runtime.ServerMetadata
 
 	newReader, berr := utilities.IOReaderFactory(req.Body)
@@ -128,7 +145,24 @@ func local_request_TraceProxyService_Status_0(ctx context.Context, marshaler run
 		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
 	}
 
-	msg, err := server.Status(ctx, &protoReq)
+	var (
+		val string
+		ok  bool
+		err error
+		_   = err
+	)
+
+	val, ok = pathParams["tenantId"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "tenantId")
+	}
+
+	protoReq.TenantId, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "tenantId", err)
+	}
+
+	msg, err := server.ExportLogTraceProxy(ctx, &protoReq)
 	return msg, metadata, err
 
 }
@@ -164,7 +198,7 @@ func RegisterTraceProxyServiceHandlerServer(ctx context.Context, mux *runtime.Se
 
 	})
 
-	mux.Handle("POST", pattern_TraceProxyService_Status_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+	mux.Handle("POST", pattern_TraceProxyService_ExportLogTraceProxy_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		var stream runtime.ServerTransportStream
@@ -172,12 +206,12 @@ func RegisterTraceProxyServiceHandlerServer(ctx context.Context, mux *runtime.Se
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
 		var err error
 		var annotatedContext context.Context
-		annotatedContext, err = runtime.AnnotateIncomingContext(ctx, mux, req, "/proto.TraceProxyService/Status", runtime.WithHTTPPathPattern("/proto.TraceProxyService/Status"))
+		annotatedContext, err = runtime.AnnotateIncomingContext(ctx, mux, req, "/proto.TraceProxyService/ExportLogTraceProxy", runtime.WithHTTPPathPattern("/trace-proxy/api/v7/tenants/{tenantId}/log-traces"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
 		}
-		resp, md, err := local_request_TraceProxyService_Status_0(annotatedContext, inboundMarshaler, server, req, pathParams)
+		resp, md, err := local_request_TraceProxyService_ExportLogTraceProxy_0(annotatedContext, inboundMarshaler, server, req, pathParams)
 		md.HeaderMD, md.TrailerMD = metadata.Join(md.HeaderMD, stream.Header()), metadata.Join(md.TrailerMD, stream.Trailer())
 		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
 		if err != nil {
@@ -185,7 +219,7 @@ func RegisterTraceProxyServiceHandlerServer(ctx context.Context, mux *runtime.Se
 			return
 		}
 
-		forward_TraceProxyService_Status_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+		forward_TraceProxyService_ExportLogTraceProxy_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 
 	})
 
@@ -195,7 +229,7 @@ func RegisterTraceProxyServiceHandlerServer(ctx context.Context, mux *runtime.Se
 // RegisterTraceProxyServiceHandlerFromEndpoint is same as RegisterTraceProxyServiceHandler but
 // automatically dials to "endpoint" and closes the connection when "ctx" gets done.
 func RegisterTraceProxyServiceHandlerFromEndpoint(ctx context.Context, mux *runtime.ServeMux, endpoint string, opts []grpc.DialOption) (err error) {
-	conn, err := grpc.Dial(endpoint, opts...)
+	conn, err := grpc.DialContext(ctx, endpoint, opts...)
 	if err != nil {
 		return err
 	}
@@ -252,25 +286,25 @@ func RegisterTraceProxyServiceHandlerClient(ctx context.Context, mux *runtime.Se
 
 	})
 
-	mux.Handle("POST", pattern_TraceProxyService_Status_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+	mux.Handle("POST", pattern_TraceProxyService_ExportLogTraceProxy_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
 		var err error
 		var annotatedContext context.Context
-		annotatedContext, err = runtime.AnnotateContext(ctx, mux, req, "/proto.TraceProxyService/Status", runtime.WithHTTPPathPattern("/proto.TraceProxyService/Status"))
+		annotatedContext, err = runtime.AnnotateContext(ctx, mux, req, "/proto.TraceProxyService/ExportLogTraceProxy", runtime.WithHTTPPathPattern("/trace-proxy/api/v7/tenants/{tenantId}/log-traces"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
 		}
-		resp, md, err := request_TraceProxyService_Status_0(annotatedContext, inboundMarshaler, client, req, pathParams)
+		resp, md, err := request_TraceProxyService_ExportLogTraceProxy_0(annotatedContext, inboundMarshaler, client, req, pathParams)
 		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
 		if err != nil {
 			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
 			return
 		}
 
-		forward_TraceProxyService_Status_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+		forward_TraceProxyService_ExportLogTraceProxy_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 
 	})
 
@@ -280,11 +314,11 @@ func RegisterTraceProxyServiceHandlerClient(ctx context.Context, mux *runtime.Se
 var (
 	pattern_TraceProxyService_ExportTraceProxy_0 = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 2, 3, 1, 0, 4, 1, 5, 4, 2, 5}, []string{"trace-proxy", "api", "v7", "tenants", "tenantId", "traces"}, ""))
 
-	pattern_TraceProxyService_Status_0 = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1}, []string{"proto.TraceProxyService", "Status"}, ""))
+	pattern_TraceProxyService_ExportLogTraceProxy_0 = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 2, 3, 1, 0, 4, 1, 5, 4, 2, 5}, []string{"trace-proxy", "api", "v7", "tenants", "tenantId", "log-traces"}, ""))
 )
 
 var (
 	forward_TraceProxyService_ExportTraceProxy_0 = runtime.ForwardResponseMessage
 
-	forward_TraceProxyService_Status_0 = runtime.ForwardResponseMessage
+	forward_TraceProxyService_ExportLogTraceProxy_0 = runtime.ForwardResponseMessage
 )

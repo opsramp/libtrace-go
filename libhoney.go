@@ -429,6 +429,14 @@ type Event struct {
 
 	APIToken    string
 	APITenantId string
+
+	SpanEvents []SpanEvent
+}
+
+type SpanEvent struct {
+	Attributes map[string]interface{}
+	Timestamp  uint64
+	Name       string
 }
 
 // Builder is used to create templates for new events, specifying default fields
@@ -968,6 +976,16 @@ func (e *Event) SendPresampled() (err error) {
 	// Mark the event as sent, no more field changes will be applied.
 	e.sent = true
 
+	var transmissionSpanEvents []transmission.SpanEvent
+	for _, spanEvent := range e.SpanEvents {
+		transmissionSpanEvent := transmission.SpanEvent{
+			Attributes: spanEvent.Attributes,
+			Timestamp:  spanEvent.Timestamp,
+			Name:       spanEvent.Name,
+		}
+		transmissionSpanEvents = append(transmissionSpanEvents, transmissionSpanEvent)
+	}
+
 	e.client.ensureTransmission()
 	txEvent := &transmission.Event{
 		APIHost:     e.APIHost,
@@ -978,6 +996,7 @@ func (e *Event) SendPresampled() (err error) {
 		Timestamp:   e.Timestamp,
 		Metadata:    e.Metadata,
 		Data:        e.data,
+		SpanEvents:  transmissionSpanEvents,
 	}
 	e.client.transmission.Add(txEvent)
 	return nil
