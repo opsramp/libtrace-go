@@ -39,7 +39,9 @@ import (
 	"github.com/opsramp/libtrace-go/version"
 	"github.com/vmihailenco/msgpack/v5"
 	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
+	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	v11 "go.opentelemetry.io/proto/otlp/common/v1"
+	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 )
 
 const (
@@ -210,8 +212,6 @@ func (h *TraceProxy) Start() error {
 		return err
 	}
 	h.client = proxypb.NewTraceProxyServiceClient(conn)
-
-	fmt.Println("**************(h.LogsEndpoint: ", (h.LogsEndpoint))
 
 	logsApiHostUrl, logsAPiErr := url.Parse(h.LogsEndpoint)
 	if logsAPiErr != nil {
@@ -500,7 +500,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 		TenantId: b.tenantId,
 	}
 
-	var apiHost string
+	var apiHost, instance, appName, serviceName string
 	var resourceLogs []*v1.ResourceLogs
 	for _, ev := range events {
 		apiHost = ev.APIHost
@@ -550,6 +550,12 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 				b.logger.Errorf("resource attribute type unknown: ", v) // here v has type interface{}
 			}
 
+			if key == "app" {
+				appName = fmt.Sprintf("%s", val)
+			}
+			if key == "service_name" {
+				serviceName = fmt.Sprintf("%s", val)
+			}
 			traceData.Data.ResourceAttributes = append(traceData.Data.ResourceAttributes, &resourceAttrKeyVal)
 		}
 		spanAttr, _ := ev.Data["spanAttributes"].(map[string]interface{})
@@ -571,6 +577,9 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 				b.logger.Errorf("span attribute type unknown: %v", v) // here v has type interface{}
 			}
 
+			if key == "instance" {
+				instance = fmt.Sprintf("%s", val)
+			}
 			traceData.Data.SpanAttributes = append(traceData.Data.SpanAttributes, &spanAttrKeyVal)
 		}
 
@@ -641,7 +650,44 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 			}
 			scopeLogs = append(scopeLogs, scopeLog)
 
+			if instance == "" {
+				instance = "unknown"
+			}
+			if appName == "" {
+				appName = "default"
+			}
+			resourceAttributes := []*commonpb.KeyValue{
+				{
+					Key:   "source",
+					Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "trace"}},
+				},
+				{
+					Key:   "type",
+					Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "event"}},
+				},
+				{
+					Key:   "host",
+					Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: instance}},
+				},
+				{
+					Key:   "app",
+					Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: appName}},
+				},
+				{
+					Key:   "service",
+					Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: serviceName}},
+				},
+				{
+					Key:   "operation",
+					Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: traceData.Data.SpanName}},
+				},
+			}
+
 			resourceLog := &v1.ResourceLogs{
+				Resource: &resourcepb.Resource{
+					Attributes:             resourceAttributes,
+					DroppedAttributesCount: 0,
+				},
 				ScopeLogs: scopeLogs,
 			}
 			resourceLogs = append(resourceLogs, resourceLog)
@@ -802,8 +848,6 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 					b.metrics.Increment("batches_sent")
 				}
 			}
-
-			fmt.Println("Error Was: ", err)
 
 			b.logger.Debugf("trace proxy response msg: %s", r.GetMessage())
 			b.logger.Debugf("trace proxy response status: %s", r.GetStatus())
