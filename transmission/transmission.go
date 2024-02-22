@@ -18,7 +18,9 @@ import (
 	"errors"
 	"fmt"
 	"github.com/opsramp/libtrace-go/logger"
+	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	v1 "go.opentelemetry.io/proto/otlp/logs/v1"
+	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
@@ -39,9 +41,7 @@ import (
 	"github.com/opsramp/libtrace-go/version"
 	"github.com/vmihailenco/msgpack/v5"
 	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
-	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	v11 "go.opentelemetry.io/proto/otlp/common/v1"
-	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 )
 
 const (
@@ -160,6 +160,9 @@ type TraceProxy struct {
 	SendEvents   bool
 }
 
+var SendEvents, SendTraces bool
+var m sync.Mutex
+
 func (h *TraceProxy) Start() error {
 	if h.Logger == nil {
 		h.Logger = &logger.NullLogger{}
@@ -167,6 +170,12 @@ func (h *TraceProxy) Start() error {
 	if h.TenantId == "" {
 		return fmt.Errorf("tenantId cant be empty")
 	}
+
+	// Set Events and Traces send flags
+	m.Lock()
+	SendEvents = h.SendEvents
+	SendTraces = true
+	m.Unlock()
 
 	// populate auth token
 	if h.defaultAuth == nil {
@@ -254,8 +263,6 @@ func (h *TraceProxy) Start() error {
 				tenantId:              h.TenantId,
 				dataset:               h.Dataset,
 				isPeer:                h.IsPeer,
-				sendEvents:            h.SendEvents,
-				sendTraces:            true,
 			}
 		}
 	}
@@ -398,8 +405,6 @@ type batchAgg struct {
 
 	client     proxypb.TraceProxyServiceClient
 	logsClient collogspb.LogsServiceClient
-	sendEvents bool
-	sendTraces bool
 }
 
 // batch is a collection of events that will all be POSTed as one HTTP call
@@ -500,8 +505,9 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 		TenantId: b.tenantId,
 	}
 
-	var apiHost, instance, appName, serviceName string
+	var apiHost, appName string
 	var resourceLogs []*v1.ResourceLogs
+	var LogRecords []*v1.LogRecord
 	for _, ev := range events {
 		apiHost = ev.APIHost
 
@@ -553,9 +559,6 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 			if key == "app" {
 				appName = fmt.Sprintf("%s", val)
 			}
-			if key == "service_name" {
-				serviceName = fmt.Sprintf("%s", val)
-			}
 			traceData.Data.ResourceAttributes = append(traceData.Data.ResourceAttributes, &resourceAttrKeyVal)
 		}
 		spanAttr, _ := ev.Data["spanAttributes"].(map[string]interface{})
@@ -577,9 +580,6 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 				b.logger.Errorf("span attribute type unknown: %v", v) // here v has type interface{}
 			}
 
-			if key == "instance" {
-				instance = fmt.Sprintf("%s", val)
-			}
 			traceData.Data.SpanAttributes = append(traceData.Data.SpanAttributes, &spanAttrKeyVal)
 		}
 
@@ -607,7 +607,6 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 
 		traceReq.Items = append(traceReq.Items, &traceData)
 
-		var LogRecords []*v1.LogRecord
 		for _, event := range ev.SpanEvents {
 			var recordAttributes []*v11.KeyValue
 			for key, val := range event.Attributes {
@@ -627,6 +626,11 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 				}
 				recordAttributes = append(recordAttributes, spanEventAttrKeyVal)
 			}
+			appNameRes := &v11.KeyValue{
+				Key:   "trace_app",
+				Value: &v11.AnyValue{Value: &v11.AnyValue_StringValue{StringValue: appName}},
+			}
+			recordAttributes = append(recordAttributes, appNameRes)
 			LogRecord := &v1.LogRecord{
 				TimeUnixNano:           event.Timestamp,
 				ObservedTimeUnixNano:   0,
@@ -640,57 +644,6 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 				SpanId:                 nil,
 			}
 			LogRecords = append(LogRecords, LogRecord)
-		}
-		if len(LogRecords) > 0 {
-			var scopeLogs []*v1.ScopeLogs
-			scopeLog := &v1.ScopeLogs{
-				Scope:      nil,
-				LogRecords: LogRecords,
-				SchemaUrl:  "",
-			}
-			scopeLogs = append(scopeLogs, scopeLog)
-
-			if instance == "" {
-				instance = "unknown"
-			}
-			if appName == "" {
-				appName = "default"
-			}
-			resourceAttributes := []*commonpb.KeyValue{
-				{
-					Key:   "source",
-					Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "trace"}},
-				},
-				{
-					Key:   "type",
-					Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "event"}},
-				},
-				{
-					Key:   "host",
-					Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: instance}},
-				},
-				{
-					Key:   "app",
-					Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: appName}},
-				},
-				{
-					Key:   "service",
-					Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: serviceName}},
-				},
-				{
-					Key:   "operation",
-					Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: traceData.Data.SpanName}},
-				},
-			}
-
-			resourceLog := &v1.ResourceLogs{
-				Resource: &resourcepb.Resource{
-					Attributes:             resourceAttributes,
-					DroppedAttributesCount: 0,
-				},
-				ScopeLogs: scopeLogs,
-			}
-			resourceLogs = append(resourceLogs, resourceLog)
 		}
 		logtraceData := proxypb.ProxyLogSpan{
 			Data:      &proxypb.LogTraceData{},
@@ -857,7 +810,7 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 	}
 
 	if sendDirect || !b.isPeer {
-		if b.sendTraces {
+		if SendTraces {
 			r, err := b.client.ExportTraceProxy(ctx, &traceReq)
 			if st, ok := status.FromError(err); ok {
 				if st.Code() != codes.OK {
@@ -865,7 +818,9 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 					b.metrics.Increment("send_errors")
 					if strings.Contains(strings.ToUpper(fmt.Sprintf("%s", err.Error())), "TRACE MANAGEMENT WAS NOT ENABLED") {
 						b.logger.Errorf("Enable Trace Management For Tenant and Restart Tracing Proxy")
-						b.sendTraces = false
+						m.Lock()
+						SendTraces = false
+						m.Unlock()
 					}
 				} else {
 					b.metrics.Increment("batches_sent")
@@ -874,7 +829,37 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 			b.logger.Debugf("trace proxy response msg: %s", r.GetMessage())
 			b.logger.Debugf("trace proxy response status: %s", r.GetStatus())
 		}
-		if b.sendEvents || len(resourceLogs) > 0 {
+
+		if len(LogRecords) > 0 {
+			var scopeLogs []*v1.ScopeLogs
+			scopeLog := &v1.ScopeLogs{
+				Scope:      nil,
+				LogRecords: LogRecords,
+				SchemaUrl:  "",
+			}
+			scopeLogs = append(scopeLogs, scopeLog)
+			resourceAttributes := []*commonpb.KeyValue{
+				{
+					Key:   "source",
+					Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "trace"}},
+				},
+				{
+					Key:   "type",
+					Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "event"}},
+				},
+			}
+
+			resourceLog := &v1.ResourceLogs{
+				Resource: &resourcepb.Resource{
+					Attributes:             resourceAttributes,
+					DroppedAttributesCount: 0,
+				},
+				ScopeLogs: scopeLogs,
+			}
+			resourceLogs = append(resourceLogs, resourceLog)
+		}
+
+		if SendEvents && len(resourceLogs) > 0 {
 			eventsReq := collogspb.ExportLogsServiceRequest{
 				ResourceLogs: resourceLogs,
 			}
@@ -896,14 +881,16 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 					b.logger.Errorf("sending event log failed. error: %s", st.String())
 					if strings.Contains(fmt.Sprintf("%s", logsError.Error()), "LOG MANAGEMENT WAS NOT ENABLED") {
 						b.logger.Errorf("Enable Log Management For Tenant and Restart Tracing Proxy")
-						b.sendEvents = false
+						m.Lock()
+						SendEvents = false
+						m.Unlock()
 					}
 				}
 
 			}
-			b.logger.Debugf("Sending Event Log Success: ", logsResponse.String())
+			b.logger.Debugf("Sending Event Log response: ", logsResponse.String())
 		} else {
-			b.logger.Debugf("Unable to Process the logs exporting because SendEvents was: ", b.sendEvents, " or len(resourcelogs) ", len(resourceLogs))
+			b.logger.Debugf("Unable to Process the logs exporting because SendEvents was: ", SendEvents, " or len(resourcelogs) ", len(resourceLogs))
 		}
 	}
 
