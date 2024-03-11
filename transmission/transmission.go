@@ -582,6 +582,10 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 
 			traceData.Data.SpanAttributes = append(traceData.Data.SpanAttributes, &spanAttrKeyVal)
 		}
+		traceData.Data.SpanAttributes = append(traceData.Data.SpanAttributes, &proxypb.KeyValue{
+			Key:   "spanKind",
+			Value: &proxypb.AnyValue{Value: &proxypb.AnyValue_StringValue{StringValue: traceData.Data.SpanKind}},
+		})
 
 		eventAttr, _ := ev.Data["eventAttributes"].(map[string]interface{})
 		for key, val := range eventAttr {
@@ -712,6 +716,10 @@ func (b *batchAgg) exportProtoMsgBatch(events []*Event) {
 
 			logtraceData.Data.SpanAttributes = append(logtraceData.Data.SpanAttributes, &spanAttrKeyVal)
 		}
+		logtraceData.Data.SpanAttributes = append(logtraceData.Data.SpanAttributes, &proxypb.KeyValue{
+			Key:   "spanKind",
+			Value: &proxypb.AnyValue{Value: &proxypb.AnyValue_StringValue{StringValue: logtraceData.Data.SpanKind}},
+		})
 
 		logTraceEventAttr, _ := ev.Data["eventAttributes"].(map[string]interface{})
 		for key, val := range logTraceEventAttr {
